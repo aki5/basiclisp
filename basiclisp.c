@@ -1,27 +1,107 @@
+/*
+ *	Basiclisp is a very small lisp interpreter, intended for non-intrusive
+ *	embedding in larger programs that could use a small scripting
+ *	language.
+ *
+ *	The code intends to be easy to understand but to the the point, so
+ *	we'll start with a short description of what a lisp interpreter does.
+ *
+ *	Lisp evaluation:
+ *
+ *		1. takes a list as input,
+ *		2. recursively evaluates all sublists,
+ *		3. evaluates the list itself by applying the built-in
+ *		   indicated by the head element.
+ *
+ *	Lambda is the new function factory of lisp. It's so named to refer
+ *	the Church lambda calculus, but calling it func or function might
+ *	be more proper.
+ *
+ *		(lambda (arg-name1 arg-name2 ..) (body1) (body2) ...)
+ *
+ *	Ie. it takes a parameter list a function-body as arguments. The
+ *	function-body may have references to symbols other than those listed
+ *	as arguments, in which case they refer to the variables as they were
+ *	at definition time.
+ *
+ *	Evaluation of a lambda-expr '(lambda (args) (body1) (body2) ...)' takes
+ *	place as follows
+ *
+ *		1. find the current environment (envr)
+ *		2. construct a beta-expr '(beta lambda-expr . envr)'
+ *		3. return 2 as the evaluated result.
+ *
+ *	So, a lambda will evaluate into a beta that still encloses the original
+ *	lambda expression, like this
+ *
+ *		((beta (lambda (arg-names) (body1) ...) . envr) arg-values)'
+ *
+ *	So, when a function which has been defined as a lambda gets called,
+ *	it is beta that does the work, and beta in our case looks as follows
+ *
+ *		1. create a new environment, chain it to 'envr'
+ *		   from the list and install it as the evaluation environment. 
+ *		2. pair arg-values with arg-names and define them in the new
+ *		   envr
+ *		3. evaluate each body1 body2 ... in sequence
+ *		4. take the value of the last body as the result.
+ *
+ *	In short, lambda-evaluation is just about binding the environment
+ *	as it existed at definition-time, and beta-evaluation is just about
+ *	binding function arguments to a new environment and popping both the
+ *	lambda and the beta off the list head.
+ *
+ *	Notice that none of this really needs a stack. Reading through the
+ *	source code, you'll surely find that most of the code is in fact
+ *	dealing with memory allocation, symbol string deduplication and parsing
+ *	of s-expressions.
+ */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#define NIL (ref_t)0
+#define nelem(x) (sizeof(x)/sizeof(x[0]))
+
 enum {
-	BUILTIN,
+	CONS,	// first so that NIL value of 0 is a cons.
 	BIGINT,
-	CONS,
 	FLOAT,
 	INTEGER,
 	STRING,
 	SYMBOL,
-	VECTOR,
+	ERROR,
+	BUILTIN,
+	//??
+	//??
 };
 
 typedef unsigned int ref_t;
 
 typedef struct Mach Mach;
 struct Mach {
+	ref_t reg0; 
+	ref_t reg1;
+	ref_t reg2; 
+	ref_t reg3;
+	ref_t reg4;
+	ref_t expr;
+	ref_t envr; // current environment, a stack of a-lists.
 
-	
-	ref_t stack; // "current continuation"
-	ref_t value; // return value, of course temporarily a temp,
+	// the following are our built-ins.
+	ref_t and;
+	ref_t atom; // atom?
+	ref_t beta;
+	ref_t car;
+	ref_t cdr;
+	ref_t cons;
+	ref_t eq; // eq?
+	ref_t _if;
+	ref_t lambda;
+	ref_t print;
+	ref_t quote;
+	ref_t set;
 
 	ref_t *idx;
 	size_t idxlen;
@@ -37,8 +117,6 @@ struct Mach {
 
 	int lineno;
 };
-
-static ref_t NIL = 0;
 
 static ref_t
 mkref(int val, int tag)
@@ -88,6 +166,12 @@ store(Mach *m, ref_t base, size_t offset, ref_t obj)
 	ref_t *p = pointer(m, base);
 	p[offset] = obj;
 	return obj;
+}
+
+static int
+iscons(Mach *m, ref_t a)
+{
+	return reftag(a) == CONS && a != NIL;
 }
 
 static int
@@ -380,27 +464,13 @@ mkfloat(Mach *m, char *str)
 }
 
 static ref_t
-mksymbol(Mach *m, char *str)
+mkstring(Mach *m, char *str, int type)
 {
 	uint32_t hash, hash2;
 	ref_t ref;
 	hash = fnv32a(str, 0);
 	if((ref = idxlookup(m, hash, str)) == NIL){
-		ref = mkany(m, str, strlen(str)+1, SYMBOL);
-		idxinsert(m, hash, ref);
-	}
-	return ref;
-}
-
-static ref_t
-mkstring(Mach *m, char *str)
-{
-	uint32_t hash;
-	ref_t ref;
-
-	hash = fnv32a(str, 0);
-	if((ref = idxlookup(m, hash, str)) == NIL){
-		ref = mkany(m, str, strlen(str)+1, STRING);
+		ref = mkany(m, str, strlen(str)+1, type);
 		idxinsert(m, hash, ref);
 	}
 	return ref;
@@ -410,72 +480,44 @@ static ref_t
 mkcons(Mach *m, ref_t a, ref_t d)
 {
 	ref_t ref;
-
+	m->reg0 = a;
+	m->reg1 = d;
 	ref = allocate(m, 2, CONS);
-	store(m, ref, 0, a);
-	store(m, ref, 1, d);
+	store(m, ref, 0, m->reg0);
+	store(m, ref, 1, m->reg1);
+	m->reg0 = NIL;
+	m->reg1 = NIL;
 	return ref;
 }
-/*
- *	       .---.    .----.
- *	ref -> |car| -> |caar|
- *	       +---+    +----+
- *	       |cdr| -. |cadr|
- *	       '---'  | '----'
- *	              |   .----.
- *	              '-> |cdar|
- *	                  +----+
- *	                  |cddr|
- *                        '----'
- */
 
-/*
- *	the calling convention on our lisp machine is a singly-linked
- *	cons-chain of stack frames. a stack frame is a tuple, with the
- *	situation looking as follows
- *
- *	Mach
- *	.-------.     .------.     .------.
- *	| stack | --> | next | --> | next | --> ...
- *	'-------'     +------+     +------+     .---.     .---.
- *	              | head | -.  | head | --> |car| --> | + |
- *	              '------'  |  '------'     +---+     '---'
- *	                        |               |cdr| --.  .---.
- *                              |               '---'   '->|car| -> number0
- *	                        '-> .---.     .--------.   +---+
- *	                            |car| --> | lambda |   |cdr| -> next-cons
- *	                            +---+     '--------'   '---'
- *	                            |cdr| --> .---.
- *	                            '---'     |car| -> args-list
- *	                                      +---+    .---.
- *	                                      |cdr| -> |car| -> body-list
- *	                                      '---'    '---'
- *
- *	Ie. the head field references the list under evaluation, with
- *	car(head) being the instruction (ie. builtin-lambda).
- */
 static ref_t
-listparse(Mach *m, FILE *fp)
+listparse(Mach *m, FILE *fp, int justone)
 {
 	ref_t list = NIL, prev = NIL, cons, nval;
 	int ltok;
+	int dot = 0;
 
 	while((ltok = lex(m, fp)) != -1){
-		printf(" ");
 		tokappend(m, '\0');
 		switch(ltok){
 		default:
-			printf("unknown token %d: '%c' '%s'\n", ltok, ltok, m->tok);
+			fprintf(stderr, "unknown token %d: '%c' '%s'\n", ltok, ltok, m->tok);
 			break;
 		case ')':
 			return list;
 		case '(':
-			nval = listparse(m, fp);
+			nval = listparse(m, fp, 0);
 			goto append;
-		case '.': case '\'': case ',':
-			printf("self(%c)", ltok);
+		case '\'':
+			nval = listparse(m, fp, 1);
+			nval = mkcons(m, m->quote, mkcons(m, nval, NIL));
+			goto append;
+		case '.':
+			dot++;
 			break;
-
+		case ',':
+			//printf("self(%c)", ltok);
+			break;
 		case INTEGER:
 			nval = mkint(m, m->tok);
 			goto append;
@@ -483,17 +525,27 @@ listparse(Mach *m, FILE *fp)
 			nval = mkfloat(m, m->tok);
 			goto append;
 		case STRING:
-			nval = mkstring(m, m->tok);
+			nval = mkstring(m, m->tok, STRING);
 			goto append;
 		case SYMBOL:
-			nval = mksymbol(m, m->tok);
+			nval = mkstring(m, m->tok, SYMBOL);
 		append:
-			cons = mkcons(m, nval, NIL);
-			if(prev != NIL)
-				store(m, prev, 1, cons);
-			else 
-				list = cons;
-			prev = cons;
+			if(justone)
+				return nval;
+			if(dot == 0){
+				cons = mkcons(m, nval, NIL);
+				if(prev != NIL)
+					store(m, prev, 1, cons);
+				else 
+					list = cons;
+				prev = cons;
+			} else if(dot == 1){
+				store(m, prev, 1, nval);
+				dot++;
+			} else {
+				fprintf(stderr, "malformed s-expression, bad use of '.'\n");
+				return list;
+			}
 			break;
 		}
 	}
@@ -502,99 +554,193 @@ listparse(Mach *m, FILE *fp)
 	return list;
 }
 
-// this is heading in the wrong direction already, I think the builtin
-// should be 'print1' and a library function should do the recursion.
+
 static int
-listprint(Mach *m, FILE *fp)
+atomprint(Mach *m, ref_t aref, FILE *fp)
 {
-
-	ref_t cons, aref;
-
-	if(m->stack == NIL){
-		fprintf(stderr, "listprint1: called with nil stack\n");
-		abort();
+	int tag = reftag(aref);
+	switch(tag){
+	default:
+		fprintf(stderr, "listprint: unknown atom: val:%zx tag:%x\n", refval(aref), reftag(aref));
+		break;
+	case CONS:
+		if(aref == NIL)
+			printf("nil");
+		else
+			printf("cons(#x%x)", aref);
+		break;
+	case INTEGER:
+		fprintf(fp, "%zd", refval(aref));
+		break;
+	case BIGINT:
+		fprintf(fp, "%lld", *(long long *)pointer(m, aref));
+		break;
+	case FLOAT:
+		fprintf(fp, "%f", *(double *)pointer(m, aref));
+		break;
+	case STRING:
+		fprintf(fp, "\"%s\"", (char *)pointer(m, aref));
+		break;
+	case BUILTIN:
+	case SYMBOL:
+		fprintf(fp, "%s", (char *)pointer(m, aref));
+		break;
 	}
+	return tag;
+}
 
-	// print list head.
-	cons = load(m, m->stack, 0);
-	if(cons != NIL){
-		aref = load(m, cons, 0);
-		switch(reftag(aref)){
-		default:
-			fprintf(stderr, "listprint: unknown a: val:%zx tag:%x\n", refval(aref), reftag(aref));
-			break;
-		case BUILTIN:
-			switch(refval(aref)){
-			default:
-				fprintf(stderr, "listprint: unknown builtin %zd\n", refval(aref));
-				break;
-			case 0:
-				fprintf(fp, "nil");
-				break;
-			}
-			break;
-		case CONS:
+// (print ...)
+static void
+eval_print(Mach *m, FILE *fp)
+{
+	int isfirst = 1;
+	ref_t *stak = &m->reg2;
+	ref_t *list = &m->reg3;
+	ref_t *valu = &m->reg4;
+
+	// skip over the 'print symbol in head position.
+	// *valu = load(m, m->expr, 1);
+	*valu = m->expr;
+	*stak = NIL;
+	*list = NIL;
+	for(;;){
+		if(iscons(m, *valu)){
 			printf("(");
-			// push new cons to stack, return.
-			m->stack = mkcons(m, aref, m->stack);
-			return -1;
-		case INTEGER:
-			fprintf(fp, "%zd\n", refval(aref));
-			break;
-		case BIGINT:
-			fprintf(fp, "%lld\n", *(long long *)pointer(m, aref));
-			break;
-		case FLOAT:
-			fprintf(fp, "%f\n", *(double *)pointer(m, aref));
-			break;
-		case STRING:
-			fprintf(fp, "\"%s\"\n", (char *)pointer(m, aref));
-			break;
-		case SYMBOL:
-			fprintf(fp, "%s\n", (char *)pointer(m, aref));
-			break;
+			*stak = mkcons(m, *list, *stak);
+			*list = *valu;
+			*valu = load(m, *list, 0);
+			isfirst = 1;
+		} else {
+			if(!isfirst)
+				printf(" ");
+			atomprint(m, *valu, fp);
+			isfirst = 0;
+unwind:
+			while(*list == NIL){
+				if(*stak == NIL)
+					goto done;
+				printf(")");
+				*list = load(m, *stak, 0);
+				*stak = load(m, *stak, 1);
+			}
+			*list = load(m, *list, 1);
+			if(*list == NIL)
+				goto unwind;
+			if(!iscons(m, *list)){
+				printf(" .");
+				*valu = *list;
+				*list = NIL;
+			} else {
+				*valu = load(m, *list, 0);
+			}
 		}
 	}
-	// current list ran out, pop the stack until we find a cons that hasn't
-	while(cons == NIL){
-		printf(")\n");
-		// if stack is empty, we're done.
-		// pop the stack (current cons), load cons from it.
-		m->stack = load(m, m->stack, 1);
-		if(m->stack == NIL)
-			return 0;
-		cons = load(m, m->stack, 0);
+done:
+	*stak = NIL;
+	*list = NIL;
+	*valu = NIL;
+}
+
+// case (car expr) == quote
+// (quote args) -> args
+void
+eval_quote(Mach *m)
+{
+	m->expr = load(m, load(m, m->expr, 1), 0); // expr = cdar expr
+}
+
+// case (car expr) == lambda
+// (lambda args body) -> (beta (lambda args body) envr)
+void
+eval_lambda(Mach *m)
+{
+	m->expr = mkcons(m, m->beta, mkcons(m, m->expr, m->envr));
+}
+
+// case (caar expr) == beta
+// ((beta (lambda args . body) . envr) args) -> (body), with a new environment
+void
+eval_beta(Mach *m)
+{
+	ref_t beta, lambda;
+
+	beta = load(m, m->expr, 0); // beta = car expr
+	lambda = load(m, load(m, beta, 1), 0); // lambda = cdar beta
+	m->envr = load(m, load(m, beta, 1), 1); // env = cddr beta
+
+	// loop over argnames and args simultaneously, cons them as pairs
+	// to the environment
+	m->reg2 = load(m, load(m, lambda, 1), 0); // argnames = cdar lambda
+	m->reg3 = load(m, m->expr, 1); // args = cdr expr
+	while(iscons(m, m->reg2) && iscons(m, m->reg3)){
+		ref_t pair = mkcons(m, load(m, m->reg2, 0), load(m, m->reg3, 0));
+		m->envr = mkcons(m, pair, m->envr);
+		m->reg2 = load(m, m->reg2, 1);
+		m->reg3 = load(m, m->reg3, 1);
 	}
 
-	// advance current cons and update it in the stack
-	// before returning.
-	cons = load(m, cons, 1);
-	store(m, m->stack, 0, cons);
-	return -1;
+	// scheme-style variadic: argnames list terminates in a symbol instead
+	// of nil, associate the rest of args-list with it.
+	if(m->reg2 != NIL){
+		ref_t pair = mkcons(m, m->reg2, m->reg3);
+		m->envr = mkcons(m, pair, m->envr);
+	}
+	// remember to clear the temps, so that gc can free them.
+	m->reg2 = NIL;
+	m->reg3 = NIL;
+
+	// parameters are bound, pull body from lambda to m->expr. 
+	beta = load(m, m->expr, 0); // beta = car expr
+	lambda = load(m, load(m, beta, 1), 0); // lambda = cdar beta
+	m->expr = load(m, load(m, lambda, 1), 1); // body = cddr lambda
 }
+
 
 int
 main(void)
 {
 	Mach m;
 	ref_t list;
+	size_t i;
 
 	memset(&m, 0, sizeof m);
-	printf("sizeof(ref_t) = %zd\n", sizeof(ref_t));
-	list = listparse(&m, stdin);
+	m._if = mkstring(&m, "if", BUILTIN);
+	m.beta = mkstring(&m, "beta", BUILTIN);
+	m.eq = mkstring(&m, "eq?", BUILTIN);
+	m.lambda = mkstring(&m, "lambda", BUILTIN);
+	m.print = mkstring(&m, "print", BUILTIN);
+	m.quote = mkstring(&m, "quote", BUILTIN);
+	m.set = mkstring(&m, "set!", BUILTIN);
+
+	if(isatty(0)){
+		for(;;){
+			printf("> "); fflush(stdout);
+			m.expr = listparse(&m, stdin, 1);
+			ref_t head = load(&m, m.expr, 0);
+			if(head == m.lambda){
+				eval_lambda(&m);
+			} else if(iscons(&m, head) && load(&m, head, 0) == m.beta){
+				eval_beta(&m);
+			}
+			eval_print(&m, stdout);
+			printf("\n");
+		}
+		exit(1);
+	}
+	list = listparse(&m, stdin, 0);
 
 	printf("mach: memlen %zd memcap %zd idxlen %zd idxcap %zd\n", m.memlen, m.memcap, m.idxlen, m.idxcap);
 
-	size_t i;
 	for(i = 0; i < m.idxcap; i++){
 		ref_t ref = m.idx[i];
 		if(ref != NIL)
 			printf("%zd: %zd.%d: '%s'\n", i, refval(ref), reftag(ref), (char *)pointer(&m, ref));
 	}
 
-	m.stack = mkcons(&m, list, NIL);
-	while(listprint(&m, stdout) == -1)
-		;
+	m.expr = list;
+	eval_print(&m, stdout);
+
+	printf("mach: memlen %zd memcap %zd idxlen %zd idxcap %zd\n", m.memlen, m.memcap, m.idxlen, m.idxcap);
 
 	return 0;
 }
