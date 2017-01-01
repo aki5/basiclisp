@@ -1,5 +1,5 @@
 /*
- *	Basiclisp is a very small lisp interpreter, intended for non-intrusive
+ *	megalisp is a very small lisp interpreter, intended for non-intrusive
  *	embedding in larger programs that could use a small scripting
  *	language.
  *
@@ -13,11 +13,11 @@
  *		3. evaluates the list itself by applying the built-in
  *		   indicated by the head element.
  *
- *	Lambda is the new function factory of lisp. It's so named to refer
+ *	Lambda is the function factory of lisp. It is called lambda due to
  *	the Church lambda calculus, but calling it func or function might
- *	be more proper.
+ *	have been just as proper.
  *
- *		(lambda (arg-name1 arg-name2 ..) (body1) (body2) ...)
+ *		(lambda (argname1 argname2 ..) (body1) (body2) ...)
  *
  *	Ie. it takes a parameter list a function-body as arguments. The
  *	function-body may have references to symbols other than those listed
@@ -28,23 +28,28 @@
  *	place as follows
  *
  *		1. find the current environment (envr)
- *		2. construct a beta-expr '(beta lambda-expr . envr)'
+ *		2. construct a beta-expr '(beta lambda-expr . (nil . envr))'
  *		3. return 2 as the evaluated result.
  *
  *	So, a lambda will evaluate into a beta that still encloses the original
  *	lambda expression, like this
  *
- *		((beta (lambda (arg-names) (body1) ...) . envr) arg-values)'
+ *		((beta (lambda (argnames) (body1) ...) . (nil . envr)) argvals)'
  *
  *	So, when a function which has been defined as a lambda gets called,
  *	it is beta that does the work, and beta in our case looks as follows
  *
  *		1. create a new environment, chain it to 'envr'
- *		   from the list and install it as the evaluation environment. 
- *		2. pair arg-values with arg-names and define them in the new
- *		   envr
+ *		   from the list and install it as the evaluation environment.
+ *		2. pair argvals with argnames and define them in the new
+ *		   envr.
  *		3. evaluate each body1 body2 ... in sequence
  *		4. take the value of the last body as the result.
+ *
+ *	The (nil . envr) pair is a technicality allowing us to extend a
+ *	current environment without creating a new one. You can think of it as
+ *	the head element of an environment. The nil could be replaced with
+ *	anything a lookup routine can efficiently skip over.
  *
  *	In short, lambda-evaluation is just about binding the environment
  *	as it existed at definition-time, and beta-evaluation is just about
@@ -60,48 +65,50 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 
 #define NIL (ref_t)0
 #define nelem(x) (sizeof(x)/sizeof(x[0]))
 
 enum {
-	CONS,	// first so that NIL value of 0 is a cons.
-	BIGINT,
-	FLOAT,
-	INTEGER,
-	STRING,
-	SYMBOL,
-	ERROR,
-	BUILTIN,
-	//??
-	//??
+	CONS = 0,	// first so that NIL value of 0 is a cons.
+	BIGINT = 1,
+	FLOAT = 2,
+	INTEGER = 3,
+	STRING = 4,
+	SYMBOL = 5,
+	ERROR = 6,
 };
 
 typedef unsigned int ref_t;
 
 typedef struct Mach Mach;
 struct Mach {
-	ref_t reg0; 
-	ref_t reg1;
-	ref_t reg2; 
+	ref_t reg0; // temp for mkcons.
+	ref_t reg1; // temp for mkcons.
+	ref_t reg2; // temp for vmcall
 	ref_t reg3;
 	ref_t reg4;
-	ref_t expr;
+
+	ref_t valu; // return value
+	ref_t expr; // expression being evaluated
 	ref_t envr; // current environment, a stack of a-lists.
+	ref_t inst; // 'instruction', a state pointer.
+	ref_t stak; // stack of (inst expr envr) lists.
+
+	// hardwired symbols for special forms.
+	ref_t _if;
+	ref_t beta;
+	ref_t define;
+	ref_t lambda;
+	ref_t quote;
 
 	// the following are our built-ins.
-	ref_t and;
-	ref_t atom; // atom?
-	ref_t beta;
-	ref_t car;
-	ref_t cdr;
-	ref_t cons;
-	ref_t eq; // eq?
-	ref_t _if;
-	ref_t lambda;
-	ref_t print;
-	ref_t quote;
-	ref_t set;
+	struct {
+		ref_t sym;
+		void (*func)(Mach *m);
+	} specials[16];
+	size_t nspecials;
 
 	ref_t *idx;
 	size_t idxlen;
@@ -154,14 +161,14 @@ pointer(Mach *m, ref_t ref)
 }
 
 static ref_t
-load(Mach *m, ref_t base, size_t offset)
+vmload(Mach *m, ref_t base, size_t offset)
 {
 	ref_t *p = pointer(m, base);
 	return p[offset];
 }
 
 static ref_t
-store(Mach *m, ref_t base, size_t offset, ref_t obj)
+vmstore(Mach *m, ref_t base, size_t offset, ref_t obj)
 {
 	ref_t *p = pointer(m, base);
 	p[offset] = obj;
@@ -169,9 +176,28 @@ store(Mach *m, ref_t base, size_t offset, ref_t obj)
 }
 
 static int
+isatom(Mach *m, ref_t a)
+{
+	int tag = reftag(a);
+	return tag != SYMBOL && tag != CONS;
+}
+
+static int
+issymbol(Mach *m, ref_t a)
+{
+	return reftag(a) == SYMBOL;
+}
+
+static int
 iscons(Mach *m, ref_t a)
 {
 	return reftag(a) == CONS && a != NIL;
+}
+
+static int
+iserror(Mach *m, ref_t a)
+{
+	return reftag(a) == ERROR;
 }
 
 static int
@@ -483,8 +509,8 @@ mkcons(Mach *m, ref_t a, ref_t d)
 	m->reg0 = a;
 	m->reg1 = d;
 	ref = allocate(m, 2, CONS);
-	store(m, ref, 0, m->reg0);
-	store(m, ref, 1, m->reg1);
+	vmstore(m, ref, 0, m->reg0);
+	vmstore(m, ref, 1, m->reg1);
 	m->reg0 = NIL;
 	m->reg1 = NIL;
 	return ref;
@@ -535,12 +561,12 @@ listparse(Mach *m, FILE *fp, int justone)
 			if(dot == 0){
 				cons = mkcons(m, nval, NIL);
 				if(prev != NIL)
-					store(m, prev, 1, cons);
-				else 
+					vmstore(m, prev, 1, cons);
+				else
 					list = cons;
 				prev = cons;
 			} else if(dot == 1){
-				store(m, prev, 1, nval);
+				vmstore(m, prev, 1, nval);
 				dot++;
 			} else {
 				fprintf(stderr, "malformed s-expression, bad use of '.'\n");
@@ -549,6 +575,8 @@ listparse(Mach *m, FILE *fp, int justone)
 			break;
 		}
 	}
+	if(ltok == -1)
+		return ERROR;
 	// should return error I think, but it's perhaps convenient
 	// to treat EOF as end-of-list.
 	return list;
@@ -563,11 +591,14 @@ atomprint(Mach *m, ref_t aref, FILE *fp)
 	default:
 		fprintf(stderr, "listprint: unknown atom: val:%zx tag:%x\n", refval(aref), reftag(aref));
 		break;
+	case ERROR:
+		fprintf(fp, "error %zx\n", refval(aref));
+		break;
 	case CONS:
 		if(aref == NIL)
-			printf("nil");
+			fprintf(fp, "nil");
 		else
-			printf("cons(#x%x)", aref);
+			fprintf(fp, "cons(#x%x)", aref);
 		break;
 	case INTEGER:
 		fprintf(fp, "%zd", refval(aref));
@@ -581,7 +612,6 @@ atomprint(Mach *m, ref_t aref, FILE *fp)
 	case STRING:
 		fprintf(fp, "\"%s\"", (char *)pointer(m, aref));
 		break;
-	case BUILTIN:
 	case SYMBOL:
 		fprintf(fp, "%s", (char *)pointer(m, aref));
 		break;
@@ -591,47 +621,48 @@ atomprint(Mach *m, ref_t aref, FILE *fp)
 
 // (print ...)
 static void
-eval_print(Mach *m, FILE *fp)
+eval_print(Mach *m)
 {
-	int isfirst = 1;
+	FILE *fp = stderr;
+	int first = 1;
 	ref_t *stak = &m->reg2;
 	ref_t *list = &m->reg3;
 	ref_t *valu = &m->reg4;
 
 	// skip over the 'print symbol in head position.
-	// *valu = load(m, m->expr, 1);
+	// *valu = vmload(m, m->expr, 1);
 	*valu = m->expr;
 	*stak = NIL;
 	*list = NIL;
 	for(;;){
 		if(iscons(m, *valu)){
-			printf("(");
+			fprintf(fp, "(");
 			*stak = mkcons(m, *list, *stak);
 			*list = *valu;
-			*valu = load(m, *list, 0);
-			isfirst = 1;
+			*valu = vmload(m, *list, 0);
+			first = 1;
 		} else {
-			if(!isfirst)
-				printf(" ");
+			if(!first)
+				fprintf(fp, " ");
 			atomprint(m, *valu, fp);
-			isfirst = 0;
+			first = 0;
 unwind:
 			while(*list == NIL){
 				if(*stak == NIL)
 					goto done;
-				printf(")");
-				*list = load(m, *stak, 0);
-				*stak = load(m, *stak, 1);
+				fprintf(fp, ")");
+				*list = vmload(m, *stak, 0);
+				*stak = vmload(m, *stak, 1);
 			}
-			*list = load(m, *list, 1);
+			*list = vmload(m, *list, 1);
 			if(*list == NIL)
 				goto unwind;
 			if(!iscons(m, *list)){
-				printf(" .");
+				fprintf(fp, " .");
 				*valu = *list;
 				*list = NIL;
 			} else {
-				*valu = load(m, *list, 0);
+				*valu = vmload(m, *list, 0);
 			}
 		}
 	}
@@ -641,60 +672,325 @@ done:
 	*valu = NIL;
 }
 
-// case (car expr) == quote
-// (quote args) -> args
+/*
+ *	Vmcall and vmreturn below are helpers for stack management when making
+ *	the vm do subroutine calls without relying on the system stack.
+ *
+ *	vmgoto just sets the instruction pointer and does nothing else. It's
+ *	trivial, but it's captured as a vm function anyway.
+ *
+ *	In vmcall, each arg must be a pointer to a Mach register, so that when
+ *	mkcons triggers a GC it won't ruin your day. Also, remember to pass
+ *	NULL as the last argument, ie.
+ *
+ *		vmcall(m, PRINT, &m->reg3, NULL);
+ *
+ *	The stack looks like this after a vmcall:
+ *
+ *	.----.    .-----.                          .----.       .-----.
+ *	|stak| -> |frame| -----------------------> |inst|  .--> |frame| ----..
+ *	'----'    +-----+     .----.      .----.   +----+  |    +-----+
+ *                | args| --> |arg1|  .-> |arg2|   |stak| -'    | args| -> ...
+ *	          '-----'     +----+  |   +----+   '----'       '-----'
+ *	                      |next| -'   | nil|
+ *	                      '----'      '----'
+ *
+ *	vmreturn pops the stack twice, first it pop the args-frame to get
+ *	to the return address, and then it pops the return address to get
+ *	to the previous frame.
+ */
+
 void
-eval_quote(Mach *m)
+vmgoto(Mach *m, ref_t inst)
 {
-	m->expr = load(m, load(m, m->expr, 1), 0); // expr = cdar expr
+	m->inst = inst;
 }
 
-// case (car expr) == lambda
-// (lambda args body) -> (beta (lambda args body) envr)
 void
-eval_lambda(Mach *m)
+vmcall(Mach *m, ref_t ret, ref_t inst, ...)
 {
-	m->expr = mkcons(m, m->beta, mkcons(m, m->expr, m->envr));
-}
+	va_list args;
+	ref_t *ref, *pcdr;
 
-// case (caar expr) == beta
-// ((beta (lambda args . body) . envr) args) -> (body), with a new environment
-void
-eval_beta(Mach *m)
-{
-	ref_t beta, lambda;
-
-	beta = load(m, m->expr, 0); // beta = car expr
-	lambda = load(m, load(m, beta, 1), 0); // lambda = cdar beta
-	m->envr = load(m, load(m, beta, 1), 1); // env = cddr beta
-
-	// loop over argnames and args simultaneously, cons them as pairs
-	// to the environment
-	m->reg2 = load(m, load(m, lambda, 1), 0); // argnames = cdar lambda
-	m->reg3 = load(m, m->expr, 1); // args = cdr expr
-	while(iscons(m, m->reg2) && iscons(m, m->reg3)){
-		ref_t pair = mkcons(m, load(m, m->reg2, 0), load(m, m->reg3, 0));
-		m->envr = mkcons(m, pair, m->envr);
-		m->reg2 = load(m, m->reg2, 1);
-		m->reg3 = load(m, m->reg3, 1);
+	// push return address
+	m->reg2 = mkcons(m, ret, m->stak);
+	m->stak = NIL;
+	va_start(args, inst);
+	// push args
+	pcdr = &m->stak;
+	while((ref = va_arg(args, ref_t *)) != NULL){
+		*pcdr = mkcons(m, *ref, NIL);
+		pcdr = (ref_t*)pointer(m, *pcdr) + 1;
 	}
-
-	// scheme-style variadic: argnames list terminates in a symbol instead
-	// of nil, associate the rest of args-list with it.
-	if(m->reg2 != NIL){
-		ref_t pair = mkcons(m, m->reg2, m->reg3);
-		m->envr = mkcons(m, pair, m->envr);
-	}
-	// remember to clear the temps, so that gc can free them.
-	m->reg2 = NIL;
-	m->reg3 = NIL;
-
-	// parameters are bound, pull body from lambda to m->expr. 
-	beta = load(m, m->expr, 0); // beta = car expr
-	lambda = load(m, load(m, beta, 1), 0); // lambda = cdar beta
-	m->expr = load(m, load(m, lambda, 1), 1); // body = cddr lambda
+	// push frame pointer.
+	m->stak = mkcons(m, m->reg2, m->stak);
+	// set instruction
+	vmgoto(m, inst);
 }
 
+void
+vmreturn(Mach *m)
+{
+	ref_t frame, inst;
+
+	// pop top frame
+	m->stak = vmload(m, m->stak, 0);
+	// read return address
+	inst = vmload(m, m->stak, 0);
+	// pop return address to get to previous frame.
+	m->stak = vmload(m, m->stak, 1);
+	vmgoto(m, inst);
+}
+
+enum {
+	APPLY = 100,
+	BETA,
+	BETA1,
+	DEFINE1,
+	DONE,
+	EVAL,
+	IF1,
+	LISTEVAL,
+	LISTEVAL1,
+};
+void
+vmstep(Mach *m)
+{
+	size_t i;
+again:
+	switch(m->inst){
+	default:
+		fprintf(stderr, "vmstep: invalid instruction %d, bailing out.\n", m->inst);
+	case DONE:
+		return;
+	case EVAL:
+		if(isatom(m, m->expr)){
+			m->valu = m->expr;
+			vmreturn(m);
+			goto again;
+		} else if(issymbol(m, m->expr)){
+			ref_t lst = m->envr;
+			while(lst != NIL){
+				ref_t pair = vmload(m, lst, 0);
+				if(iscons(m, pair)){
+					ref_t key = vmload(m, pair, 0);
+					if(key == m->expr){
+						m->valu = vmload(m, pair, 1);
+						break;
+					}
+				}
+				lst = vmload(m, lst, 1);
+			}
+			if(lst == NIL){
+				fprintf(stderr, "undefined symbol: %s\n", (char *)pointer(m, m->expr));
+				m->valu = m->expr; // undefined
+			}
+			vmreturn(m);
+			goto again;
+		} else if(iscons(m, m->expr)){
+fprintf(stderr, "eval: apply.\n");
+			// form is (something), so at least we are applying something.
+			// handle special forms (quote, lambda, beta, if, define) before
+			// evaluating args.
+			ref_t head = vmload(m, m->expr, 0);
+
+			if(head == m->_if){
+				// (if cond then else)
+				m->expr = vmload(m, m->expr, 1);
+				m->stak = mkcons(m, m->expr, m->stak);
+				// evaluate condition recursively
+				m->expr = vmload(m, m->expr, 0);
+				vmcall(m, IF1, EVAL, NULL);
+				goto again;
+	case IF1:
+				// evaluate result as a tail-call, if condition
+				// evaluated to NIL, skip over the 'then' element.
+				m->expr = vmload(m, m->stak, 0);
+				m->stak = vmload(m, m->stak, 1);
+				m->expr = vmload(m, m->expr, 1);
+				if(m->valu == NIL)
+					m->expr = vmload(m, m->expr, 1);
+				m->expr = vmload(m, m->expr, 0);
+				vmgoto(m, EVAL);
+				goto again;
+			}
+			if(head == m->beta){
+fprintf(stderr, "beta: return self\n");
+				m->valu = m->expr;
+				vmreturn(m);
+				goto again;
+			}
+			if(head == m->define){
+				// (define sym val) -> args,
+				// current environment gets sym associated with val.
+				ref_t *sym = &m->reg2;
+				ref_t *val = &m->reg3;
+				ref_t *env = &m->reg3; // used after vmcall..
+				*sym = vmload(m, m->expr, 1);
+				*val = vmload(m, *sym, 1);
+				*sym = vmload(m, *sym, 0);
+				*val = vmload(m, *val, 0);
+				m->stak = mkcons(m, *sym, m->stak);
+				m->expr = *val;
+
+				fprintf(stderr, "define pre: ");
+				eval_print(m);
+				fprintf(stderr, "\n");
+
+				vmcall(m, DEFINE1, EVAL, NULL);
+				goto again;
+	case DEFINE1:
+				m->expr = m->valu;
+				fprintf(stderr, "define post: ");
+				eval_print(m);
+				fprintf(stderr, "\n");
+
+				// restore sym from stak, construct (sym . val)
+				*sym = vmload(m, m->stak, 0);
+				m->stak = vmload(m, m->stak, 1);
+				*sym = mkcons(m, *sym, m->valu);
+
+				// push new (sym . val) just below current env head.
+				*env = vmload(m, m->envr, 1);
+				*env = mkcons(m, *sym, *env);
+				vmstore(m, m->envr, 1, *env);
+				*env = NIL;
+				*sym = NIL;
+
+				m->valu = NIL;
+				vmreturn(m);
+				goto again;
+			}
+			if(head == m->lambda){
+				// (lambda args body) -> (beta (lambda args body) envr)
+				m->valu = mkcons(m, m->beta, mkcons(m, m->expr, m->envr));
+				vmreturn(m);
+				goto again;
+			}
+			if(head == m->quote){
+				// (quote args) -> args
+				m->valu = vmload(m, vmload(m, m->expr, 1), 0); // expr = cdar expr
+				vmreturn(m);
+				goto again;
+			}
+
+			// at this point we know it is a list, and that it is
+			// not a special form. evaluate args and apply.
+			vmcall(m, APPLY, LISTEVAL, NULL);
+			goto again;
+	case APPLY:
+			m->expr = m->valu;
+			head = vmload(m, m->expr, 0);
+			if(issymbol(m, head)){
+				fprintf(stderr, "apply: head is a symbol: %s\n", (char *)pointer(m, head));
+				vmreturn(m);
+				goto again;
+			 } else if(iscons(m, head)){
+	case BETA:
+				fprintf(stderr, "beta\n");
+				// form is ((beta (lambda...)) args)
+				// ((beta (lambda args . body) . envr) args) -> (body),
+				// with a new environment
+
+				ref_t beta, lambda;
+				ref_t *argnames = &m->reg2;
+				ref_t *args = &m->reg3;
+
+				// save old environment to stack.
+				m->stak = mkcons(m, m->envr, m->stak);
+
+				beta = vmload(m, m->expr, 0);
+				lambda = vmload(m, vmload(m, beta, 1), 0);
+				m->envr = vmload(m, vmload(m, beta, 1), 1);
+
+				*argnames = vmload(m, lambda, 1);
+				*args = vmload(m, m->expr, 1); // args = cdr expr
+				if(iscons(m, *argnames)){
+					// loop over argnames and args simultaneously, cons
+					// them as pairs to the environment
+					*argnames = vmload(m, *argnames, 0);
+					while(iscons(m, *argnames) && iscons(m, *args)){
+						ref_t pair = mkcons(m,
+							vmload(m, *argnames, 0),
+							vmload(m, *args, 0));
+						m->envr = mkcons(m, pair, m->envr);
+						*argnames = vmload(m, *argnames, 1);
+						*args = vmload(m, *args, 1);
+					}
+				}
+
+				// scheme-style variadic: argnames list terminates in a
+				// symbol instead of nil, associate the rest of argslist
+				// with it. notice: (lambda x (body)) also lands here.
+				if(*argnames != NIL){
+					ref_t pair = mkcons(m, *argnames, *args);
+					m->envr = mkcons(m, pair, m->envr);
+				}
+
+				// push a new 'environment head' in.
+				m->envr = mkcons(m, NIL, m->envr);
+				// clear the registers.
+				*argnames = NIL;
+				*args = NIL;
+
+				// parameters are bound, pull body from lambda to m->expr.
+				beta = vmload(m, m->expr, 0); // beta = car expr
+				lambda = vmload(m, vmload(m, beta, 1), 0);
+				m->expr = vmload(m, vmload(m, vmload(m, lambda, 1), 1), 0);
+				vmcall(m, BETA1, EVAL, NULL);
+				goto again;
+	case BETA1:
+				m->envr = vmload(m, m->stak, 0);
+				m->stak = vmload(m, m->stak, 1);
+				vmreturn(m);
+				goto again;
+			} else {
+				fprintf(stderr, "apply: head not symbol: ");
+				eval_print(m);
+				fprintf(stderr, "\n");
+				vmreturn(m);
+				goto again;
+			}
+		}
+		fprintf(stderr, "vmstep eval: unrecognized form\n");
+		m->valu = ERROR;
+		vmreturn(m);
+		goto again;
+	case LISTEVAL:
+		m->reg2 = mkcons(m, m->expr, NIL);
+		m->reg3 = m->expr;
+		m->stak = mkcons(m, m->reg2, m->stak);
+		goto listeval_first;
+	case LISTEVAL1:
+		m->reg2 = vmload(m, m->stak, 0);
+		m->reg3 = vmload(m, m->reg2, 1);
+		m->reg3 = mkcons(m, m->valu, m->reg3);
+		vmstore(m, m->reg2, 1, m->reg3);
+		m->reg3 = vmload(m, m->reg2, 0);
+listeval_first:
+		if(m->reg3 != NIL){
+			m->expr = vmload(m, m->reg3, 0);
+			m->reg3 = vmload(m, m->reg3, 1);
+			vmstore(m, m->reg2, 0, m->reg3);
+			vmcall(m, LISTEVAL1, EVAL, NULL);
+			goto again;
+		}
+		m->valu = vmload(m, m->reg2, 1);
+
+		// all done, reverse the value list.
+		m->reg3 = NIL;
+		while((m->reg2 = vmload(m, m->valu, 1)) != NIL){
+			vmstore(m, m->valu, 1, m->reg3);
+			m->reg3 = m->valu;
+			m->valu = m->reg2;
+		}
+		vmstore(m, m->valu, 1, m->reg3);
+
+		m->stak = vmload(m, m->stak, 1);
+		vmreturn(m);
+		goto again;
+	}
+}
 
 int
 main(void)
@@ -704,43 +1000,30 @@ main(void)
 	size_t i;
 
 	memset(&m, 0, sizeof m);
-	m._if = mkstring(&m, "if", BUILTIN);
-	m.beta = mkstring(&m, "beta", BUILTIN);
-	m.eq = mkstring(&m, "eq?", BUILTIN);
-	m.lambda = mkstring(&m, "lambda", BUILTIN);
-	m.print = mkstring(&m, "print", BUILTIN);
-	m.quote = mkstring(&m, "quote", BUILTIN);
-	m.set = mkstring(&m, "set!", BUILTIN);
 
-	if(isatty(0)){
-		for(;;){
-			printf("> "); fflush(stdout);
-			m.expr = listparse(&m, stdin, 1);
-			ref_t head = load(&m, m.expr, 0);
-			if(head == m.lambda){
-				eval_lambda(&m);
-			} else if(iscons(&m, head) && load(&m, head, 0) == m.beta){
-				eval_beta(&m);
-			}
-			eval_print(&m, stdout);
-			printf("\n");
-		}
-		exit(1);
+	// install empty environment.
+	m.envr = mkcons(&m, NIL, NIL);
+
+	// register built-in symbols.
+	m._if = mkstring(&m, "if", SYMBOL);
+	m.beta = mkstring(&m, "beta", SYMBOL);
+	m.define = mkstring(&m, "define", SYMBOL);
+	m.lambda = mkstring(&m, "lambda", SYMBOL);
+	m.quote = mkstring(&m, "quote", SYMBOL);
+
+	for(;;){
+		printf("> "); fflush(stdout);
+		m.expr = listparse(&m, stdin, 1);
+		if(iserror(&m, m.expr))
+			break;
+		vmcall(&m, DONE, EVAL, NULL);
+		vmstep(&m);
+		m.expr = m.valu;
+		eval_print(&m);
+		printf("\n");
+		if(iserror(&m, m.valu))
+			break;
 	}
-	list = listparse(&m, stdin, 0);
-
-	printf("mach: memlen %zd memcap %zd idxlen %zd idxcap %zd\n", m.memlen, m.memcap, m.idxlen, m.idxcap);
-
-	for(i = 0; i < m.idxcap; i++){
-		ref_t ref = m.idx[i];
-		if(ref != NIL)
-			printf("%zd: %zd.%d: '%s'\n", i, refval(ref), reftag(ref), (char *)pointer(&m, ref));
-	}
-
-	m.expr = list;
-	eval_print(&m, stdout);
-
-	printf("mach: memlen %zd memcap %zd idxlen %zd idxcap %zd\n", m.memlen, m.memcap, m.idxlen, m.idxcap);
-
+	exit(1);
 	return 0;
 }
