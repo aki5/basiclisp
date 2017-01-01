@@ -72,12 +72,23 @@
 
 enum {
 	CONS = 0,	// first so that NIL value of 0 is a cons.
-	BIGINT = 1,
-	FLOAT = 2,
-	INTEGER = 3,
-	STRING = 4,
-	SYMBOL = 5,
-	ERROR = 6,
+	BIGINT,
+	FLOAT,
+	INTEGER,
+	STRING,
+	SYMBOL,
+	ERROR,
+
+	// states for vmstep()
+	APPLY = 100,
+	BETA,
+	BETA1,
+	DEFINE1,
+	RETURN,
+	EVAL,
+	IF1,
+	LISTEVAL,
+	LISTEVAL1,
 };
 
 typedef unsigned int ref_t;
@@ -103,12 +114,19 @@ struct Mach {
 	ref_t lambda;
 	ref_t quote;
 
-	// the following are our built-ins.
-	struct {
-		ref_t sym;
-		void (*func)(Mach *m);
-	} specials[16];
-	size_t nspecials;
+	// arithmetic
+	ref_t add;
+	ref_t sub;
+	ref_t mul;
+	ref_t div;
+
+	// logic
+	ref_t eq;
+	ref_t less;
+
+	// constants
+	ref_t truth; // #t
+	ref_t untruth; // #f
 
 	ref_t *idx;
 	size_t idxlen;
@@ -467,12 +485,10 @@ mkany(Mach *m, void *data, size_t len, int type)
 }
 
 static ref_t
-mkint(Mach *m, char *str)
+mkint(Mach *m, long long v)
 {
-	long long v;
 	ref_t ref;
 
-	v = strtoll(str, NULL, 0);
 	ref = mkref(v, INTEGER);
 	if((long long)refval(ref) == v)
 		return ref;
@@ -542,10 +558,10 @@ listparse(Mach *m, FILE *fp, int justone)
 			dot++;
 			break;
 		case ',':
-			//printf("self(%c)", ltok);
+			fprintf(stderr, "TODO: backquote not implemented yet\n");
 			break;
 		case INTEGER:
-			nval = mkint(m, m->tok);
+			nval = mkint(m, strtoll(m->tok, NULL, 0));
 			goto append;
 		case FLOAT:
 			nval = mkfloat(m, m->tok);
@@ -582,6 +598,17 @@ listparse(Mach *m, FILE *fp, int justone)
 	return list;
 }
 
+static long long
+loadint(Mach *m, ref_t ref)
+{
+	int tag = reftag(ref);
+	if(tag == INTEGER)
+		return (long long)refval(ref);
+	if(tag == BIGINT)
+		return *(long long *)pointer(m, ref);
+	fprintf(stderr, "loadint: non-integer reference\n");
+	return 0;
+}
 
 static int
 atomprint(Mach *m, ref_t aref, FILE *fp)
@@ -742,17 +769,6 @@ vmreturn(Mach *m)
 	vmgoto(m, inst);
 }
 
-enum {
-	APPLY = 100,
-	BETA,
-	BETA1,
-	DEFINE1,
-	DONE,
-	EVAL,
-	IF1,
-	LISTEVAL,
-	LISTEVAL1,
-};
 void
 vmstep(Mach *m)
 {
@@ -761,7 +777,7 @@ again:
 	switch(m->inst){
 	default:
 		fprintf(stderr, "vmstep: invalid instruction %d, bailing out.\n", m->inst);
-	case DONE:
+	case RETURN:
 		return;
 	case EVAL:
 		if(isatom(m, m->expr)){
@@ -788,7 +804,6 @@ again:
 			vmreturn(m);
 			goto again;
 		} else if(iscons(m, m->expr)){
-fprintf(stderr, "eval: apply.\n");
 			// form is (something), so at least we are applying something.
 			// handle special forms (quote, lambda, beta, if, define) before
 			// evaluating args.
@@ -815,7 +830,7 @@ fprintf(stderr, "eval: apply.\n");
 				goto again;
 			}
 			if(head == m->beta){
-fprintf(stderr, "beta: return self\n");
+				// beta literal: return self.
 				m->valu = m->expr;
 				vmreturn(m);
 				goto again;
@@ -833,18 +848,9 @@ fprintf(stderr, "beta: return self\n");
 				m->stak = mkcons(m, *sym, m->stak);
 				m->expr = *val;
 
-				fprintf(stderr, "define pre: ");
-				eval_print(m);
-				fprintf(stderr, "\n");
-
 				vmcall(m, DEFINE1, EVAL, NULL);
 				goto again;
 	case DEFINE1:
-				m->expr = m->valu;
-				fprintf(stderr, "define post: ");
-				eval_print(m);
-				fprintf(stderr, "\n");
-
 				// restore sym from stak, construct (sym . val)
 				*sym = vmload(m, m->stak, 0);
 				m->stak = vmload(m, m->stak, 1);
@@ -875,19 +881,99 @@ fprintf(stderr, "beta: return self\n");
 			}
 
 			// at this point we know it is a list, and that it is
-			// not a special form. evaluate args and apply.
+			// not a special form. evaluate args, then apply.
 			vmcall(m, APPLY, LISTEVAL, NULL);
 			goto again;
 	case APPLY:
 			m->expr = m->valu;
 			head = vmload(m, m->expr, 0);
-			if(issymbol(m, head)){
+			if(head == m->add){
+				long long res;
+				m->expr = vmload(m, m->expr, 1);
+				res = loadint(m, vmload(m, m->expr, 0));
+				m->expr = vmload(m, m->expr, 1);
+				while(m->expr != NIL){
+					res += loadint(m, vmload(m, m->expr, 0));
+					m->expr = vmload(m, m->expr, 1);
+				}
+				m->valu = mkint(m, res);
+				vmreturn(m);
+				goto again;
+			} else if(head == m->sub){
+				long long res;
+				m->expr = vmload(m, m->expr, 1);
+				res = loadint(m, vmload(m, m->expr, 0));
+				m->expr = vmload(m, m->expr, 1);
+				while(m->expr != NIL){
+					res -= loadint(m, vmload(m, m->expr, 0));
+					m->expr = vmload(m, m->expr, 1);
+				}
+				m->valu = mkint(m, res);
+				vmreturn(m);
+				goto again;
+			} else if(head == m->mul){
+				long long res;
+				m->expr = vmload(m, m->expr, 1);
+				res = loadint(m, vmload(m, m->expr, 0));
+				m->expr = vmload(m, m->expr, 1);
+				while(m->expr != NIL){
+					res *= loadint(m, vmload(m, m->expr, 0));
+					m->expr = vmload(m, m->expr, 1);
+				}
+				m->valu = mkint(m, res);
+				vmreturn(m);
+				goto again;
+			} else if(head == m->div){
+				long long res;
+				m->expr = vmload(m, m->expr, 1);
+				res = loadint(m, vmload(m, m->expr, 0));
+				m->expr = vmload(m, m->expr, 1);
+				while(m->expr != NIL){
+					res /= loadint(m, vmload(m, m->expr, 0));
+					m->expr = vmload(m, m->expr, 1);
+				}
+				m->valu = mkint(m, res);
+				vmreturn(m);
+				goto again;
+			} else if(head == m->eq){
+				ref_t ref0;
+				int eq, tag0;
+				m->expr = vmload(m, m->expr, 1);
+				ref0 = vmload(m, m->expr, 0);
+				m->expr = vmload(m, m->expr, 1);
+				while(m->expr != NIL){
+					ref_t ref = vmload(m, m->expr, 0);
+					if(reftag(ref0) != reftag(ref)){
+						m->valu = NIL;
+						goto eqdone;
+					}
+					if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
+						long long v0, v;
+						v0 = loadint(m, ref0);
+						v = loadint(m, ref);
+						if(v0 != v){
+							m->valu = NIL;
+							goto eqdone;
+						}
+					}
+					if(refval(ref0) != refval(ref)){
+						m->valu = NIL;
+						goto eqdone;
+					}
+					m->expr = vmload(m, m->expr, 1);
+				}
+				m->valu = m->truth;
+			eqdone:
+				vmreturn(m);
+				goto again;
+			} else if(head == m->less){
+			} else if(issymbol(m, head)){
 				fprintf(stderr, "apply: head is a symbol: %s\n", (char *)pointer(m, head));
 				vmreturn(m);
 				goto again;
-			 } else if(iscons(m, head)){
+			} else if(iscons(m, head)){
 	case BETA:
-				fprintf(stderr, "beta\n");
+				;
 				// form is ((beta (lambda...)) args)
 				// ((beta (lambda args . body) . envr) args) -> (body),
 				// with a new environment
@@ -897,6 +983,7 @@ fprintf(stderr, "beta: return self\n");
 				ref_t *args = &m->reg3;
 
 				// save old environment to stack.
+				// TODO: unless we are in tail position.
 				m->stak = mkcons(m, m->envr, m->stak);
 
 				beta = vmload(m, m->expr, 0);
@@ -937,6 +1024,7 @@ fprintf(stderr, "beta: return self\n");
 				beta = vmload(m, m->expr, 0); // beta = car expr
 				lambda = vmload(m, vmload(m, beta, 1), 0);
 				m->expr = vmload(m, vmload(m, vmload(m, lambda, 1), 1), 0);
+				// TODO: vmgoto instead if we are in tail position.
 				vmcall(m, BETA1, EVAL, NULL);
 				goto again;
 	case BETA1:
@@ -1011,12 +1099,23 @@ main(void)
 	m.lambda = mkstring(&m, "lambda", SYMBOL);
 	m.quote = mkstring(&m, "quote", SYMBOL);
 
+	m.add = mkstring(&m, "+", SYMBOL);
+	m.sub = mkstring(&m, "-", SYMBOL);
+	m.mul = mkstring(&m, "*", SYMBOL);
+	m.div = mkstring(&m, "/", SYMBOL);
+
+	m.eq = mkstring(&m, "eq?", SYMBOL);
+	m.less = mkstring(&m, "<", SYMBOL);
+
+	m.truth = mkstring(&m, "#t", SYMBOL);
+	m.untruth = mkstring(&m, "#f", SYMBOL);
+
 	for(;;){
 		printf("> "); fflush(stdout);
 		m.expr = listparse(&m, stdin, 1);
 		if(iserror(&m, m.expr))
 			break;
-		vmcall(&m, DONE, EVAL, NULL);
+		vmcall(&m, RETURN, EVAL, NULL);
 		vmstep(&m);
 		m.expr = m.valu;
 		eval_print(&m);
