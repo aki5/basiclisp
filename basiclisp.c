@@ -734,7 +734,13 @@ again:
 				*sym = vmload(m, m->expr, 1);
 				*val = vmload(m, *sym, 1);
 				*sym = vmload(m, *sym, 0);
-				*val = vmload(m, *val, 0);
+				if(iscons(m, *sym)){
+					// scheme shorthand: (define (name args...) body1 body2...).
+					*val = mkcons(m, m->lambda, mkcons(m, vmload(m, *sym, 1), *val));
+					*sym = vmload(m, *sym, 0);
+				} else {
+					*val = vmload(m, *val, 0);
+				}
 				m->stak = mkcons(m, *sym, m->stak);
 				m->expr = *val;
 
