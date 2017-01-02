@@ -887,8 +887,32 @@ again:
 				vmreturn(m);
 				goto again;
 			} else if(head == m->less){
-				fprintf(stderr, "less operator not implemented yet\n");
-				m->valu = ERROR;
+				ref_t ref0, ref1;
+				m->expr = vmload(m, m->expr, 1);
+				ref0 = vmload(m, m->expr, 0);
+				m->expr = vmload(m, m->expr, 1);
+				ref1 = vmload(m, m->expr, 0);
+				m->valu = m->untruth; // default to false.
+				if((reftag(ref0) == INTEGER || reftag(ref0) == BIGINT)
+				&& (reftag(ref1) == INTEGER || reftag(ref1) == BIGINT)){
+					long long i0, i1;
+					i0 = loadint(m, ref0);
+					i1 = loadint(m, ref1);
+					if(i0 < i1)
+						m->valu = m->truth;
+				} else if(reftag(ref0) == FLOAT && reftag(ref1) == FLOAT){
+					double f0, f1;
+					f0 = loadfloat(m, ref0);
+					f1 = loadfloat(m, ref1);
+					if(f0 < f1)
+						m->valu = m->truth;
+				} else if((reftag(ref0) == SYMBOL && reftag(ref1) == SYMBOL)
+					|| (reftag(ref0) == STRING && reftag(ref1) == STRING)){
+					if(strcmp((char*)pointer(m, ref0), (char*)pointer(m, ref1)) < 0)
+						m->valu = m->truth;
+				} else if(reftag(ref0) < reftag(ref1)){
+					m->valu = m->truth;
+				}
 				vmreturn(m);
 				goto again;
 			} else if(head == m->car){
@@ -928,7 +952,6 @@ again:
 				ref_t beta, lambda;
 				ref_t *argnames = &m->reg2;
 				ref_t *args = &m->reg3;
-
 
 				beta = vmload(m, m->expr, 0);
 				lambda = vmload(m, vmload(m, beta, 1), 0);
