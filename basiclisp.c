@@ -21,6 +21,7 @@ enum {
 	APPLY = 100,
 	BETA,
 	BETA1,
+	CONTINUE,
 	DEFINE1,
 	RETURN,
 	EVAL,
@@ -59,6 +60,11 @@ struct Mach {
 
 	// constants
 	ref_t truth, untruth; // #t, #f
+
+	// extension mechanism. this bails out from the interpreter,
+	// allowing the caller to produce a new m->valu based on what
+	// happens to be in m->expr, and then just call vmstep again.
+	ref_t extcall;
 
 	ref_t *idx;
 	size_t idxlen;
@@ -659,7 +665,7 @@ vmreturn(Mach *m)
 	vmgoto(m, inst);
 }
 
-void
+int
 vmstep(Mach *m)
 {
 	size_t i;
@@ -667,8 +673,11 @@ again:
 	switch(m->inst){
 	default:
 		fprintf(stderr, "vmstep: invalid instruction %d, bailing out.\n", m->inst);
+	case CONTINUE:
+		vmreturn(m);
+		goto again;
 	case RETURN:
-		return;
+		return 0;
 	case EVAL:
 		if(isatom(m, m->expr)){
 			m->valu = m->expr;
@@ -941,6 +950,9 @@ again:
 				m->valu = mkcons(m, m->reg2, m->reg3);
 				vmreturn(m);
 				goto again;
+			} else if(head == m->extcall){
+				m->inst = CONTINUE;
+				return 1;
 			} else if(issymbol(m, head)){
 				fprintf(stderr, "apply: head is a symbol: %s\n", (char *)pointer(m, head));
 				vmreturn(m);
@@ -948,7 +960,7 @@ again:
 			} else if(iscons(m, head)){
 	case BETA:
 				// save old environment to stack.
-				// TODO: unless we are in tail position.
+				// TODO: unless we were called from a tail position
 				m->stak = mkcons(m, m->envr, m->stak);
 
 				// form is ((beta (lambda...)) args)
@@ -1004,6 +1016,7 @@ again:
 					m->expr = vmload(m, m->reg2, 0);
 					m->reg2 = vmload(m, m->reg2, 1);
 					vmstore(m, m->stak, 0, m->reg2);
+					// if reg2 == nil, this is a tail position.
 					vmcall(m, BETA1, EVAL);
 					goto again;
 				}
@@ -1081,6 +1094,8 @@ main(void)
 	m.lambda = mkstring(&m, "lambda", SYMBOL);
 	m.quote = mkstring(&m, "quote", SYMBOL);
 
+	m.extcall = mkstring(&m, "extcall", SYMBOL);
+
 	m.cons = mkstring(&m, "cons", SYMBOL);
 	m.car = mkstring(&m, "car", SYMBOL);
 	m.cdr = mkstring(&m, "cdr", SYMBOL);
@@ -1103,7 +1118,12 @@ main(void)
 		if(iserror(&m, m.expr))
 			break;
 		vmcall(&m, RETURN, EVAL);
-		vmstep(&m);
+		while(vmstep(&m) == 1){
+			fprintf(stderr, "extcall: ");
+			eval_print(&m);
+			m.valu = vmload(&m, m.expr, 1);
+			fprintf(stderr, "\n");
+		}
 		m.expr = m.valu;
 		eval_print(&m);
 		printf("\n");
