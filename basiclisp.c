@@ -35,7 +35,7 @@ typedef struct Mach Mach;
 struct Mach {
 	ref_t reg0; // temp for mkcons.
 	ref_t reg1; // temp for mkcons.
-	ref_t reg2; // temp for vmcall
+	ref_t reg2;
 	ref_t reg3;
 	ref_t reg4;
 
@@ -43,21 +43,16 @@ struct Mach {
 	ref_t expr; // expression being evaluated
 	ref_t envr; // current environment, a stack of a-lists.
 	ref_t inst; // 'instruction', a state pointer.
-	ref_t stak; // stack of (inst expr envr) lists.
+	ref_t stak; // call stack
 
 	// hardwired symbols for special forms.
-	ref_t _if;
-	ref_t beta;
-	ref_t define;
-	ref_t lambda;
-	ref_t quote;
+	ref_t _if, beta, define, lambda, quote;
 
 	// list manipulation
 	ref_t cons, car, cdr;
 
 	// arithmetic
-	ref_t add, sub;
-	ref_t mul, div, rem;
+	ref_t add, sub, mul, div, rem;
 
 	// logic
 	ref_t eq, null, less;
@@ -642,44 +637,24 @@ done:
 	*valu = NIL;
 }
 
-void
+static void
 vmgoto(Mach *m, ref_t inst)
 {
 	m->inst = inst;
 }
 
-void
-vmcall(Mach *m, ref_t ret, ref_t inst, ...)
+static void
+vmcall(Mach *m, ref_t ret, ref_t inst)
 {
-	va_list args;
-	ref_t *ref, *pcdr;
-
-	// push return address
-	m->reg2 = mkcons(m, ret, m->stak);
-	m->stak = NIL;
-	va_start(args, inst);
-	// push args
-	pcdr = &m->stak;
-	while((ref = va_arg(args, ref_t *)) != NULL){
-		*pcdr = mkcons(m, *ref, NIL);
-		pcdr = (ref_t*)pointer(m, *pcdr) + 1;
-	}
-	// push frame pointer.
-	m->stak = mkcons(m, m->reg2, m->stak);
-	// set instruction
+	m->stak = mkcons(m, ret, m->stak);
 	vmgoto(m, inst);
 }
 
-void
+static void
 vmreturn(Mach *m)
 {
-	ref_t frame, inst;
-
-	// pop top frame
-	m->stak = vmload(m, m->stak, 0);
-	// read return address
+	ref_t inst;
 	inst = vmload(m, m->stak, 0);
-	// pop return address to get to previous frame.
 	m->stak = vmload(m, m->stak, 1);
 	vmgoto(m, inst);
 }
@@ -730,15 +705,15 @@ again:
 				m->stak = mkcons(m, m->expr, m->stak);
 				// evaluate condition recursively
 				m->expr = vmload(m, m->expr, 0);
-				vmcall(m, IF1, EVAL, NULL);
+				vmcall(m, IF1, EVAL);
 				goto again;
 	case IF1:
 				// evaluate result as a tail-call, if condition
-				// evaluated to NIL, skip over the 'then' element.
+				// evaluated to #f, skip over 'then' to 'else'.
 				m->expr = vmload(m, m->stak, 0);
 				m->stak = vmload(m, m->stak, 1);
 				m->expr = vmload(m, m->expr, 1);
-				if(m->valu == NIL)
+				if(m->valu == m->untruth)
 					m->expr = vmload(m, m->expr, 1);
 				m->expr = vmload(m, m->expr, 0);
 				vmgoto(m, EVAL);
@@ -763,7 +738,7 @@ again:
 				m->stak = mkcons(m, *sym, m->stak);
 				m->expr = *val;
 
-				vmcall(m, DEFINE1, EVAL, NULL);
+				vmcall(m, DEFINE1, EVAL);
 				goto again;
 	case DEFINE1:
 				// restore sym from stak, construct (sym . val)
@@ -797,7 +772,7 @@ again:
 
 			// at this point we know it is a list, and that it is
 			// not a special form. evaluate args, then apply.
-			vmcall(m, APPLY, LISTEVAL, NULL);
+			vmcall(m, APPLY, LISTEVAL);
 			goto again;
 	case APPLY:
 			m->expr = m->valu;
@@ -859,7 +834,7 @@ again:
 				}
 				vmreturn(m);
 				goto again;
-			} else if(head == m->null){
+			} else if(head == m->null){ // (null? ...)
 				ref_t ref0;
 				m->expr = vmload(m, m->expr, 1);
 				ref0 = vmload(m, m->expr, 0);
@@ -873,29 +848,36 @@ again:
 				}
 				vmreturn(m);
 				goto again;
-			} else if(head == m->eq){
+			} else if(head == m->eq){ // (eq? ...)
 				ref_t ref0;
-				int eq, tag0;
 				m->expr = vmload(m, m->expr, 1);
 				ref0 = vmload(m, m->expr, 0);
 				m->expr = vmload(m, m->expr, 1);
 				while(m->expr != NIL){
 					ref_t ref = vmload(m, m->expr, 0);
 					if(reftag(ref0) != reftag(ref)){
-						m->valu = NIL;
+						m->valu = m->untruth;
 						goto eqdone;
 					}
-					if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
+					if(reftag(ref0) == FLOAT){
+						double v0, v;
+						v0 = loadfloat(m, ref0);
+						v = loadfloat(m, ref);
+						if(v0 != v){
+							m->valu = m->untruth;
+							goto eqdone;
+						}
+					} else if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
 						long long v0, v;
 						v0 = loadint(m, ref0);
 						v = loadint(m, ref);
 						if(v0 != v){
-							m->valu = NIL;
+							m->valu = m->untruth;
 							goto eqdone;
 						}
 					}
 					if(refval(ref0) != refval(ref)){
-						m->valu = NIL;
+						m->valu = m->untruth;
 						goto eqdone;
 					}
 					m->expr = vmload(m, m->expr, 1);
@@ -985,13 +967,20 @@ again:
 				// parameters are bound, pull body from lambda to m->expr.
 				beta = vmload(m, m->expr, 0); // beta = car expr
 				lambda = vmload(m, vmload(m, beta, 1), 0);
-				m->expr = vmload(m, vmload(m, vmload(m, lambda, 1), 1), 0);
-				// TODO: vmgoto instead if we are in tail position.
-				vmcall(m, BETA1, EVAL, NULL);
-				goto again;
+				m->expr = vmload(m, vmload(m, lambda, 1), 1);
+				m->stak = mkcons(m, m->expr, m->stak);
 	case BETA1:
-				m->envr = vmload(m, m->stak, 0);
-				m->stak = vmload(m, m->stak, 1);
+				m->reg2 = vmload(m, m->stak, 0);
+				if(m->reg2 != NIL){
+					m->expr = vmload(m, m->reg2, 0);
+					m->reg2 = vmload(m, m->reg2, 1);
+					vmstore(m, m->stak, 0, m->reg2);
+					vmcall(m, BETA1, EVAL);
+					goto again;
+				}
+				m->stak = vmload(m, m->stak, 1); // pop expr (body-list).
+				m->envr = vmload(m, m->stak, 0); // restore environment
+				m->stak = vmload(m, m->stak, 1); // pop environment
 				vmreturn(m);
 				goto again;
 			} else {
@@ -1022,7 +1011,7 @@ listeval_first:
 			m->expr = vmload(m, m->reg3, 0);
 			m->reg3 = vmload(m, m->reg3, 1);
 			vmstore(m, m->reg2, 0, m->reg3);
-			vmcall(m, LISTEVAL1, EVAL, NULL);
+			vmcall(m, LISTEVAL1, EVAL);
 			goto again;
 		}
 		m->valu = vmload(m, m->reg2, 1);
@@ -1036,6 +1025,8 @@ listeval_first:
 		}
 		vmstore(m, m->valu, 1, m->reg3);
 
+		m->reg2 = NIL;
+		m->reg3 = NIL;
 		m->stak = vmload(m, m->stak, 1);
 		vmreturn(m);
 		goto again;
@@ -1082,7 +1073,7 @@ main(void)
 		m.expr = listparse(&m, stdin, 1);
 		if(iserror(&m, m.expr))
 			break;
-		vmcall(&m, RETURN, EVAL, NULL);
+		vmcall(&m, RETURN, EVAL);
 		vmstep(&m);
 		m.expr = m.valu;
 		eval_print(&m);
