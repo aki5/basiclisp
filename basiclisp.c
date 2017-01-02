@@ -1,66 +1,3 @@
-/*
- *	basiclisp is a very small lisp interpreter, intended for non-intrusive
- *	embedding in larger programs that could use a small scripting
- *	language.
- *
- *	The code intends to be easy to understand but to the the point, so
- *	we'll start with a short description of what a lisp interpreter does.
- *
- *	Lisp evaluation:
- *
- *		1. takes a list as input,
- *		2. recursively evaluates all sublists,
- *		3. evaluates the list itself by applying the built-in
- *		   indicated by the head element.
- *
- *	Lambda is the function factory of lisp. It is called lambda due to
- *	the Church lambda calculus, but calling it func or function might
- *	have been just as proper.
- *
- *		(lambda (argname1 argname2 ..) (body1) (body2) ...)
- *
- *	Ie. it takes a parameter list a function-body as arguments. The
- *	function-body may have references to symbols other than those listed
- *	as arguments, in which case they refer to the variables as they were
- *	at definition time.
- *
- *	Evaluation of a lambda-expr '(lambda (args) (body1) (body2) ...)' takes
- *	place as follows
- *
- *		1. find the current environment (envr)
- *		2. construct a beta-expr '(beta lambda-expr . (nil . envr))'
- *		3. return 2 as the evaluated result.
- *
- *	So, a lambda will evaluate into a beta that still encloses the original
- *	lambda expression, like this
- *
- *		((beta (lambda (argnames) (body1) ...) . (nil . envr)) argvals)'
- *
- *	So, when a function which has been defined as a lambda gets called,
- *	it is beta that does the work, and beta in our case looks as follows
- *
- *		1. create a new environment, chain it to 'envr'
- *		   from the list and install it as the evaluation environment.
- *		2. pair argvals with argnames and define them in the new
- *		   envr.
- *		3. evaluate each body1 body2 ... in sequence
- *		4. take the value of the last body as the result.
- *
- *	The (nil . envr) pair is a technicality allowing us to extend a
- *	current environment without creating a new one. You can think of it as
- *	the head element of an environment. The nil could be replaced with
- *	anything a lookup routine can efficiently skip over.
- *
- *	In short, lambda-evaluation is just about binding the environment
- *	as it existed at definition-time, and beta-evaluation is just about
- *	binding function arguments to a new environment and popping both the
- *	lambda and the beta off the list head.
- *
- *	Notice that none of this really needs a stack. Reading through the
- *	source code, you'll surely find that most of the code is in fact
- *	dealing with memory allocation, symbol string deduplication and parsing
- *	of s-expressions.
- */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,7 +29,7 @@ enum {
 	LISTEVAL1,
 };
 
-typedef unsigned int ref_t;
+typedef unsigned short ref_t;
 
 typedef struct Mach Mach;
 struct Mach {
@@ -116,24 +53,17 @@ struct Mach {
 	ref_t quote;
 
 	// list manipulation
-	ref_t cons;
-	ref_t car;
-	ref_t cdr;
+	ref_t cons, car, cdr;
 
 	// arithmetic
-	ref_t add;
-	ref_t sub;
-	ref_t mul;
-	ref_t div;
-	ref_t rem;
+	ref_t add, sub;
+	ref_t mul, div, rem;
 
 	// logic
-	ref_t eq;
-	ref_t less;
+	ref_t eq, null, less;
 
 	// constants
-	ref_t truth; // #t
-	ref_t untruth; // #f
+	ref_t truth, untruth; // #t, #f
 
 	ref_t *idx;
 	size_t idxlen;
@@ -929,6 +859,20 @@ again:
 				}
 				vmreturn(m);
 				goto again;
+			} else if(head == m->null){
+				ref_t ref0;
+				m->expr = vmload(m, m->expr, 1);
+				ref0 = vmload(m, m->expr, 0);
+				if(reftag(ref0) == CONS){
+					if(ref0 == NIL)
+						m->valu = m->truth;
+					else
+						m->valu = m->untruth;
+				} else {
+					m->valu = m->untruth;
+				}
+				vmreturn(m);
+				goto again;
 			} else if(head == m->eq){
 				ref_t ref0;
 				int eq, tag0;
@@ -1127,6 +1071,7 @@ main(void)
 	m.rem = mkstring(&m, "%", SYMBOL);
 
 	m.eq = mkstring(&m, "eq?", SYMBOL);
+	m.null = mkstring(&m, "null?", SYMBOL);
 	m.less = mkstring(&m, "<", SYMBOL);
 
 	m.truth = mkstring(&m, "#t", SYMBOL);
