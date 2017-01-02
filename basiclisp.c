@@ -1,5 +1,5 @@
 /*
- *	megalisp is a very small lisp interpreter, intended for non-intrusive
+ *	basiclisp is a very small lisp interpreter, intended for non-intrusive
  *	embedding in larger programs that could use a small scripting
  *	language.
  *
@@ -66,6 +66,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <math.h>
 
 #define NIL (ref_t)0
 #define nelem(x) (sizeof(x)/sizeof(x[0]))
@@ -114,11 +115,17 @@ struct Mach {
 	ref_t lambda;
 	ref_t quote;
 
+	// list manipulation
+	ref_t cons;
+	ref_t car;
+	ref_t cdr;
+
 	// arithmetic
 	ref_t add;
 	ref_t sub;
 	ref_t mul;
 	ref_t div;
+	ref_t rem;
 
 	// logic
 	ref_t eq;
@@ -497,11 +504,8 @@ mkint(Mach *m, long long v)
 }
 
 static ref_t
-mkfloat(Mach *m, char *str)
+mkfloat(Mach *m, double v)
 {
-	double v;
-
-	v = strtod(str, NULL);
 	return mkany(m, &v, sizeof v, FLOAT);
 }
 
@@ -564,7 +568,7 @@ listparse(Mach *m, FILE *fp, int justone)
 			nval = mkint(m, strtoll(m->tok, NULL, 0));
 			goto append;
 		case FLOAT:
-			nval = mkfloat(m, m->tok);
+			nval = mkfloat(m, strtod(m->tok, NULL));
 			goto append;
 		case STRING:
 			nval = mkstring(m, m->tok, STRING);
@@ -607,6 +611,15 @@ loadint(Mach *m, ref_t ref)
 	if(tag == BIGINT)
 		return *(long long *)pointer(m, ref);
 	fprintf(stderr, "loadint: non-integer reference\n");
+	return 0;
+}
+
+static double
+loadfloat(Mach *m, ref_t ref)
+{
+	if(reftag(ref) == FLOAT)
+		return *(double *)pointer(m, ref);
+	fprintf(stderr, "loadfloat: non-float reference\n");
 	return 0;
 }
 
@@ -698,34 +711,6 @@ done:
 	*list = NIL;
 	*valu = NIL;
 }
-
-/*
- *	Vmcall and vmreturn below are helpers for stack management when making
- *	the vm do subroutine calls without relying on the system stack.
- *
- *	vmgoto just sets the instruction pointer and does nothing else. It's
- *	trivial, but it's captured as a vm function anyway.
- *
- *	In vmcall, each arg must be a pointer to a Mach register, so that when
- *	mkcons triggers a GC it won't ruin your day. Also, remember to pass
- *	NULL as the last argument, ie.
- *
- *		vmcall(m, PRINT, &m->reg3, NULL);
- *
- *	The stack looks like this after a vmcall:
- *
- *	.----.    .-----.                          .----.       .-----.
- *	|stak| -> |frame| -----------------------> |inst|  .--> |frame| ----..
- *	'----'    +-----+     .----.      .----.   +----+  |    +-----+
- *                | args| --> |arg1|  .-> |arg2|   |stak| -'    | args| -> ...
- *	          '-----'     +----+  |   +----+   '----'       '-----'
- *	                      |next| -'   | nil|
- *	                      '----'      '----'
- *
- *	vmreturn pops the stack twice, first it pop the args-frame to get
- *	to the return address, and then it pops the return address to get
- *	to the previous frame.
- */
 
 void
 vmgoto(Mach *m, ref_t inst)
@@ -887,52 +872,61 @@ again:
 	case APPLY:
 			m->expr = m->valu;
 			head = vmload(m, m->expr, 0);
-			if(head == m->add){
-				long long res;
+			if(head == m->add || head == m->sub || head == m->mul || head == m->div || head == m->rem){
+				ref_t ref0, ref;
+				long long ires;
+				double fres;
 				m->expr = vmload(m, m->expr, 1);
-				res = loadint(m, vmload(m, m->expr, 0));
+				ref0 = vmload(m, m->expr, 0);
+				if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
+					ires = loadint(m, ref0);
+				} else if(reftag(ref0) == FLOAT){
+					fres = loadfloat(m, ref0);
+				} else {
+					m->valu = ERROR;
+					vmreturn(m);
+					goto again;
+				}
 				m->expr = vmload(m, m->expr, 1);
 				while(m->expr != NIL){
-					res += loadint(m, vmload(m, m->expr, 0));
+					ref = vmload(m, m->expr, 0);
+					if(reftag(ref0) != reftag(ref)){
+						m->valu = ERROR;
+						vmreturn(m);
+						goto again;
+					}
+					if(reftag(ref0) == FLOAT){
+						double tmp = loadfloat(m, ref);
+						if(head == m->add)
+							fres += tmp;
+						else if(head == m->sub)
+							fres -= tmp;
+						else if(head == m->mul)
+							fres *= tmp;
+						else if(head == m->div)
+							fres /= tmp;
+						else if(head == m->rem)
+							fres = fmod(fres, tmp);
+					} else {
+						long long tmp = loadint(m, ref);
+						if(head == m->add)
+							ires += tmp;
+						else if(head == m->sub)
+							ires -= tmp;
+						else if(head == m->mul)
+							ires *= tmp;
+						else if(head == m->div)
+							ires /= tmp;
+						else if(head == m->rem)
+							ires %= tmp;
+					}
 					m->expr = vmload(m, m->expr, 1);
 				}
-				m->valu = mkint(m, res);
-				vmreturn(m);
-				goto again;
-			} else if(head == m->sub){
-				long long res;
-				m->expr = vmload(m, m->expr, 1);
-				res = loadint(m, vmload(m, m->expr, 0));
-				m->expr = vmload(m, m->expr, 1);
-				while(m->expr != NIL){
-					res -= loadint(m, vmload(m, m->expr, 0));
-					m->expr = vmload(m, m->expr, 1);
+				if(reftag(ref0) == FLOAT){
+					m->valu = mkfloat(m, fres);
+				} else {
+					m->valu = mkint(m, ires);
 				}
-				m->valu = mkint(m, res);
-				vmreturn(m);
-				goto again;
-			} else if(head == m->mul){
-				long long res;
-				m->expr = vmload(m, m->expr, 1);
-				res = loadint(m, vmload(m, m->expr, 0));
-				m->expr = vmload(m, m->expr, 1);
-				while(m->expr != NIL){
-					res *= loadint(m, vmload(m, m->expr, 0));
-					m->expr = vmload(m, m->expr, 1);
-				}
-				m->valu = mkint(m, res);
-				vmreturn(m);
-				goto again;
-			} else if(head == m->div){
-				long long res;
-				m->expr = vmload(m, m->expr, 1);
-				res = loadint(m, vmload(m, m->expr, 0));
-				m->expr = vmload(m, m->expr, 1);
-				while(m->expr != NIL){
-					res /= loadint(m, vmload(m, m->expr, 0));
-					m->expr = vmload(m, m->expr, 1);
-				}
-				m->valu = mkint(m, res);
 				vmreturn(m);
 				goto again;
 			} else if(head == m->eq){
@@ -967,13 +961,40 @@ again:
 				vmreturn(m);
 				goto again;
 			} else if(head == m->less){
+				fprintf(stderr, "less operator not implemented yet\n");
+				m->valu = ERROR;
+				vmreturn(m);
+				goto again;
+			} else if(head == m->car){
+				m->reg2 = vmload(m, m->expr, 1);
+				m->reg2 = vmload(m, m->reg2, 0);
+				m->valu = vmload(m, m->reg2, 0);
+				vmreturn(m);
+				goto again;
+			} else if(head == m->cdr){
+				m->reg2 = vmload(m, m->expr, 1);
+				m->reg2 = vmload(m, m->reg2, 0);
+				m->valu = vmload(m, m->reg2, 1);
+				vmreturn(m);
+				goto again;
+			} else if(head == m->cons){
+				m->reg2 = vmload(m, m->expr, 1);
+				m->reg3 = vmload(m, m->reg2, 1);
+				m->reg2 = vmload(m, m->reg2, 0);
+				m->reg3 = vmload(m, m->reg3, 0);
+				m->valu = mkcons(m, m->reg2, m->reg3);
+				vmreturn(m);
+				goto again;
 			} else if(issymbol(m, head)){
 				fprintf(stderr, "apply: head is a symbol: %s\n", (char *)pointer(m, head));
 				vmreturn(m);
 				goto again;
 			} else if(iscons(m, head)){
 	case BETA:
-				;
+				// save old environment to stack.
+				// TODO: unless we are in tail position.
+				m->stak = mkcons(m, m->envr, m->stak);
+
 				// form is ((beta (lambda...)) args)
 				// ((beta (lambda args . body) . envr) args) -> (body),
 				// with a new environment
@@ -982,9 +1003,6 @@ again:
 				ref_t *argnames = &m->reg2;
 				ref_t *args = &m->reg3;
 
-				// save old environment to stack.
-				// TODO: unless we are in tail position.
-				m->stak = mkcons(m, m->envr, m->stak);
 
 				beta = vmload(m, m->expr, 0);
 				lambda = vmload(m, vmload(m, beta, 1), 0);
@@ -1099,10 +1117,14 @@ main(void)
 	m.lambda = mkstring(&m, "lambda", SYMBOL);
 	m.quote = mkstring(&m, "quote", SYMBOL);
 
+	m.cons = mkstring(&m, "cons", SYMBOL);
+	m.car = mkstring(&m, "car", SYMBOL);
+	m.cdr = mkstring(&m, "cdr", SYMBOL);
 	m.add = mkstring(&m, "+", SYMBOL);
 	m.sub = mkstring(&m, "-", SYMBOL);
 	m.mul = mkstring(&m, "*", SYMBOL);
 	m.div = mkstring(&m, "/", SYMBOL);
+	m.rem = mkstring(&m, "%", SYMBOL);
 
 	m.eq = mkstring(&m, "eq?", SYMBOL);
 	m.less = mkstring(&m, "<", SYMBOL);
