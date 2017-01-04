@@ -7,6 +7,7 @@
 
 #define NIL (ref_t)0
 #define nelem(x) (sizeof(x)/sizeof(x[0]))
+#define MKREF(val, tag) (((val)<<3)|((tag)&7))
 
 enum {
 	CONS = 0,	// first so that NIL value of 0 is a cons.
@@ -16,24 +17,27 @@ enum {
 	STRING,
 	SYMBOL,
 	ERROR,
+	BUILTIN,
 
 	// states for vmstep()
-	APPLY = 100,
-	BETA,
-	BETA1,
-	CONTINUE,
-	DEFINE1,
-	RETURN,
-	EVAL,
-	IF1,
-	LISTEVAL,
-	LISTEVAL1,
+	APPLY = MKREF(1, BUILTIN),
+	BETA = MKREF(2, BUILTIN),
+	BETA1 = MKREF(3, BUILTIN),
+	CONTINUE = MKREF(4, BUILTIN),
+	DEFINE1 = MKREF(5, BUILTIN),
+	RETURN = MKREF(6, BUILTIN),
+	EVAL = MKREF(7, BUILTIN),
+	IF1 = MKREF(8, BUILTIN),
+	LISTEVAL = MKREF(9, BUILTIN),
+	LISTEVAL1 = MKREF(10, BUILTIN),
 };
 
 typedef unsigned short ref_t;
 
 typedef struct Mach Mach;
 struct Mach {
+	ref_t inst; // 'instruction', a state pointer.
+
 	ref_t reg0; // temp for mkcons.
 	ref_t reg1; // temp for mkcons.
 	ref_t reg2;
@@ -43,7 +47,6 @@ struct Mach {
 	ref_t valu; // return value
 	ref_t expr; // expression being evaluated
 	ref_t envr; // current environment, a stack of a-lists.
-	ref_t inst; // 'instruction', a state pointer.
 	ref_t stak; // call stack
 
 	// hardwired symbols for special forms.
@@ -84,7 +87,7 @@ struct Mach {
 static ref_t
 mkref(int val, int tag)
 {
-	return (val << 3) | (tag & 7);
+	return MKREF(val, tag);
 }
 
 static int
@@ -1075,6 +1078,109 @@ listeval_first:
 	}
 }
 
+uint32_t *
+allocbit(size_t i)
+{
+	uint32_t *map;
+	size_t nmap = (i+31)/32;
+
+	map = malloc(nmap * sizeof map[0]);
+	memset(map, 0, nmap * sizeof map[0]);
+	return map;
+}
+
+uint32_t
+getbit(uint32_t *map, size_t i)
+{
+	return map[i/32] & (1 << (i&31));
+}
+
+void
+setbit(uint32_t *map, size_t i)
+{
+	map[i/32] |= 1 << (i&31);
+}
+
+ref_t
+vmcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, ref_t *mem, ref_t ref)
+{
+	ref_t nref;
+	size_t off;
+
+	off = m->memlen;
+	switch(reftag(ref)){
+	default:
+		fprintf(stderr, "vmcopy: unknown tag %d\n", reftag(ref));
+		return NIL;
+	case CONS:
+		if(ref == NIL)
+			return NIL;
+		nref = mkcons(m, mem[urefval(ref)], mem[urefval(ref)+1]);
+		goto forw;
+	case BIGINT:
+		nref = mkint(m, *(long long *)(mem+urefval(ref)));
+		goto forw;
+	case FLOAT:
+		nref = mkfloat(m, *(double *)(mem+urefval(ref)));
+		goto forw;
+	case STRING:
+	case SYMBOL:
+		fprintf(stderr, "gc: %s: %s\n", reftag(ref) == SYMBOL ? "symbol" : "string", (char *)(mem+urefval(ref)));
+		nref = mkstring(m, (char *)(mem+urefval(ref)), reftag(ref));
+	forw:
+		mem[urefval(ref)] = nref;
+		setbit(isforw, urefval(ref));
+		break;
+	case INTEGER:
+	case ERROR:
+		nref = ref;
+		break;
+	}
+	if(reftag(ref) != CONS)
+		for(;off < m->memlen; off++)
+			setbit(isatom, off);
+	return nref;
+}
+
+void
+vmgc(Mach *m)
+{
+	size_t i;
+	uint32_t *isatom;
+	uint32_t *isforw;
+	ref_t *oldmem;
+
+fprintf(stderr, "gc start: %zd\n", m->memlen);
+
+	isatom = allocbit(m->memlen);
+	isforw = allocbit(m->memlen);
+	oldmem = m->mem;
+	m->mem = NULL;
+	m->memcap = 0;
+	m->memlen = 0;
+	m->idxcap = 0;
+	m->idxlen = 0;
+
+	ref_t *refp;
+	for(refp = &m->reg0; refp <= &m->extcall; refp++)
+		*refp = vmcopy(m, isatom, isforw, oldmem, *refp);
+
+	for(i = 0; i < m->memlen; i++){
+		if(getbit(isatom, i) != 0)
+			continue;
+		if(getbit(isforw, urefval(m->mem[i])) != 0)
+			m->mem[i] = oldmem[urefval(m->mem[i])];
+		else
+			m->mem[i] = vmcopy(m, isatom, isforw, oldmem, m->mem[i]);
+	}
+
+	free(oldmem);
+	free(isatom);
+	free(isforw);
+
+fprintf(stderr, "gc end: %zd\n", m->memlen);
+}
+
 int
 main(void)
 {
@@ -1129,6 +1235,9 @@ main(void)
 		printf("\n");
 		if(iserror(&m, m.valu))
 			break;
+		m.valu = NIL;
+		m.expr = NIL;
+		vmgc(&m);
 	}
 	exit(1);
 	return 0;
