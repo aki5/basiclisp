@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <math.h>
 
 #define NIL (ref_t)0
@@ -96,10 +97,10 @@ reftag(ref_t ref)
 	return ref & 7;
 }
 
-static ssize_t
+static intptr_t
 refval(ref_t ref)
 {
-	return (ssize_t)ref >> 3;
+	return (intptr_t)ref >> 3;
 }
 
 static size_t
@@ -1217,6 +1218,8 @@ main(void)
 
 	m.truth = mkstring(&m, "#t", SYMBOL);
 	m.untruth = mkstring(&m, "#f", SYMBOL);
+
+	vmgc(&m);
 
 	for(;;){
 		printf("> "); fflush(stdout);
