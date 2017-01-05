@@ -20,17 +20,41 @@ enum {
 	ERROR,
 	BUILTIN,
 
+
+	BLT_IF = 0,
+	BLT_BETA,
+	BLT_DEFINE,
+	BLT_LAMBDA,
+	BLT_QUOTE,
+	BLT_EXTCALL,
+	BLT_CONS,
+	BLT_CAR,
+	BLT_CDR,
+	BLT_ADD,
+	BLT_SUB,
+	BLT_MUL,
+	BLT_DIV,
+	BLT_REM,
+	BLT_EQ,
+	BLT_NULL,
+	BLT_LESS,
+	BLT_TRUTH,
+	BLT_UNTRUTH,
+	NUM_BLT,
+
 	// states for vmstep()
-	APPLY = MKREF(1, BUILTIN),
-	BETA = MKREF(2, BUILTIN),
-	BETA1 = MKREF(3, BUILTIN),
-	CONTINUE = MKREF(4, BUILTIN),
-	DEFINE1 = MKREF(5, BUILTIN),
-	RETURN = MKREF(6, BUILTIN),
-	EVAL = MKREF(7, BUILTIN),
-	IF1 = MKREF(8, BUILTIN),
-	LISTEVAL = MKREF(9, BUILTIN),
-	LISTEVAL1 = MKREF(10, BUILTIN),
+	APPLY,
+	BETA,
+	BETA1,
+	CONTINUE,
+	DEFINE1,
+	RETURN,
+	EVAL,
+	IF1,
+	LISTEVAL,
+	LISTEVAL1,
+	HEAD1,
+
 };
 
 typedef unsigned short ref_t;
@@ -50,26 +74,6 @@ struct Mach {
 	ref_t envr; // current environment, a stack of a-lists.
 	ref_t stak; // call stack
 
-	// hardwired symbols for special forms.
-	ref_t _if, beta, define, lambda, quote;
-
-	// list manipulation
-	ref_t cons, car, cdr;
-
-	// arithmetic
-	ref_t add, sub, mul, div, rem;
-
-	// logic
-	ref_t eq, null, less;
-
-	// constants
-	ref_t truth, untruth; // #t, #f
-
-	// extension mechanism. this bails out from the interpreter,
-	// allowing the caller to produce a new m->valu based on what
-	// happens to be in m->expr, and then just call vmstep again.
-	ref_t extcall;
-
 	ref_t *idx;
 	size_t idxlen;
 	size_t idxcap;
@@ -83,6 +87,28 @@ struct Mach {
 	size_t tokcap;
 
 	int lineno;
+};
+
+static char *bltnames[] = {
+	"if",
+	"beta",
+	"define",
+	"lambda",
+	"quote",
+	"extcall",
+	"cons",
+	"car",
+	"cdr",
+	"+",
+	"-",
+	"*",
+	"/",
+	"%",
+	"eq?",
+	"null?",
+	"<",
+	"#t",
+	"#f",
 };
 
 static ref_t
@@ -491,7 +517,7 @@ listparse(Mach *m, FILE *fp, int justone)
 			goto append;
 		case '\'':
 			nval = listparse(m, fp, 1);
-			nval = mkcons(m, m->quote, mkcons(m, nval, NIL));
+			nval = mkcons(m, mkref(BLT_QUOTE, BUILTIN), mkcons(m, nval, NIL));
 			goto append;
 		case '.':
 			dot++;
@@ -650,7 +676,7 @@ done:
 static void
 vmgoto(Mach *m, ref_t inst)
 {
-	m->inst = inst;
+	m->inst = mkref(inst, BUILTIN);
 }
 
 static void
@@ -669,12 +695,23 @@ vmreturn(Mach *m)
 	vmgoto(m, inst);
 }
 
+static void
+vmdefine(Mach *m, ref_t sym, ref_t val)
+{
+	ref_t *pair = &m->reg2;
+	ref_t *env = &m->reg3;
+	*pair = mkcons(m, sym, val);
+	*env = vmload(m, m->envr, 1);
+	*env = mkcons(m, *pair, *env);
+	vmstore(m, m->envr, 1, *env);
+}
+
 int
 vmstep(Mach *m)
 {
 	size_t i;
 again:
-	switch(m->inst){
+	switch(refval(m->inst)){
 	default:
 		fprintf(stderr, "vmstep: invalid instruction %d, bailing out.\n", m->inst);
 	case CONTINUE:
@@ -710,83 +747,97 @@ again:
 			// form is (something), so at least we are applying something.
 			// handle special forms (quote, lambda, beta, if, define) before
 			// evaluating args.
-			ref_t head = vmload(m, m->expr, 0);
 
-			if(head == m->_if){
-				// (if cond then else)
-				m->expr = vmload(m, m->expr, 1);
-				m->stak = mkcons(m, m->expr, m->stak);
-				// evaluate condition recursively
-				m->expr = vmload(m, m->expr, 0);
-				vmcall(m, IF1, EVAL);
-				goto again;
-	case IF1:
-				// evaluate result as a tail-call, if condition
-				// evaluated to #f, skip over 'then' to 'else'.
-				m->expr = vmload(m, m->stak, 0);
-				m->stak = vmload(m, m->stak, 1);
-				m->expr = vmload(m, m->expr, 1);
-				if(m->valu == m->untruth)
+			// TODO: evaluating the head element here is a bit of a hack.
+			ref_t head;
+			m->stak = mkcons(m, m->expr, m->stak);
+			m->expr = vmload(m, m->expr, 0);
+			vmcall(m, HEAD1, EVAL);
+			goto again;
+	case HEAD1:
+			head = m->valu;
+			m->valu = NIL;
+			m->expr = vmload(m, m->stak, 0);
+			m->stak = vmload(m, m->stak, 1);
+
+			if(reftag(head) == BUILTIN){
+				ref_t blt = refval(head);
+				if(blt == BLT_IF){
+					// (if cond then else)
 					m->expr = vmload(m, m->expr, 1);
-				m->expr = vmload(m, m->expr, 0);
-				vmgoto(m, EVAL);
-				goto again;
-			}
-			if(head == m->beta){
-				// beta literal: return self.
-				m->valu = m->expr;
-				vmreturn(m);
-				goto again;
-			}
-			if(head == m->define){
-				// (define sym val) -> args,
-				// current environment gets sym associated with val.
-				ref_t *sym = &m->reg2;
-				ref_t *val = &m->reg3;
-				ref_t *env = &m->reg3; // used after vmcall..
-				*sym = vmload(m, m->expr, 1);
-				*val = vmload(m, *sym, 1);
-				*sym = vmload(m, *sym, 0);
-				if(iscons(m, *sym)){
-					// scheme shorthand: (define (name args...) body1 body2...).
-					*val = mkcons(m, m->lambda, mkcons(m, vmload(m, *sym, 1), *val));
-					*sym = vmload(m, *sym, 0);
-				} else {
-					*val = vmload(m, *val, 0);
+					m->stak = mkcons(m, m->expr, m->stak);
+					// evaluate condition recursively
+					m->expr = vmload(m, m->expr, 0);
+					vmcall(m, IF1, EVAL);
+					goto again;
+	case IF1:
+					// evaluate result as a tail-call, if condition
+					// evaluated to #f, skip over 'then' to 'else'.
+					m->expr = vmload(m, m->stak, 0);
+					m->stak = vmload(m, m->stak, 1);
+					m->expr = vmload(m, m->expr, 1);
+					if(m->valu == MKREF(BLT_UNTRUTH, BUILTIN))
+						m->expr = vmload(m, m->expr, 1);
+					m->expr = vmload(m, m->expr, 0);
+					vmgoto(m, EVAL);
+					goto again;
 				}
-				m->stak = mkcons(m, *sym, m->stak);
-				m->expr = *val;
+				if(blt == BLT_BETA){
+					// beta literal: return self.
+					m->valu = m->expr;
+					vmreturn(m);
+					goto again;
+				}
+				if(blt == BLT_DEFINE){
+					// (define sym val) -> args,
+					// current environment gets sym associated with val.
+					ref_t *sym = &m->reg2;
+					ref_t *val = &m->reg3;
+					ref_t *env = &m->reg3; // used after vmcall..
+					*sym = vmload(m, m->expr, 1);
+					*val = vmload(m, *sym, 1);
+					*sym = vmload(m, *sym, 0);
+					if(iscons(m, *sym)){
+						// scheme shorthand: (define (name args...) body1 body2...).
+						*val = mkcons(m, mkref(BLT_LAMBDA, BUILTIN), mkcons(m, vmload(m, *sym, 1), *val));
+						*sym = vmload(m, *sym, 0);
+					} else {
+						*val = vmload(m, *val, 0);
+					}
+					m->stak = mkcons(m, *sym, m->stak);
+					m->expr = *val;
 
-				vmcall(m, DEFINE1, EVAL);
-				goto again;
-	case DEFINE1:
-				// restore sym from stak, construct (sym . val)
-				*sym = vmload(m, m->stak, 0);
-				m->stak = vmload(m, m->stak, 1);
-				*sym = mkcons(m, *sym, m->valu);
+					vmcall(m, DEFINE1, EVAL);
+					goto again;
+		case DEFINE1:
+					// restore sym from stak, construct (sym . val)
+					*sym = vmload(m, m->stak, 0);
+					m->stak = vmload(m, m->stak, 1);
+					*sym = mkcons(m, *sym, m->valu);
 
-				// push new (sym . val) just below current env head.
-				*env = vmload(m, m->envr, 1);
-				*env = mkcons(m, *sym, *env);
-				vmstore(m, m->envr, 1, *env);
-				*env = NIL;
-				*sym = NIL;
+					// push new (sym . val) just below current env head.
+					*env = vmload(m, m->envr, 1);
+					*env = mkcons(m, *sym, *env);
+					vmstore(m, m->envr, 1, *env);
+					*env = NIL;
+					*sym = NIL;
 
-				m->valu = NIL;
-				vmreturn(m);
-				goto again;
-			}
-			if(head == m->lambda){
-				// (lambda args body) -> (beta (lambda args body) envr)
-				m->valu = mkcons(m, m->beta, mkcons(m, m->expr, m->envr));
-				vmreturn(m);
-				goto again;
-			}
-			if(head == m->quote){
-				// (quote args) -> args
-				m->valu = vmload(m, vmload(m, m->expr, 1), 0); // expr = cdar expr
-				vmreturn(m);
-				goto again;
+					m->valu = NIL;
+					vmreturn(m);
+					goto again;
+				}
+				if(blt == BLT_LAMBDA){
+					// (lambda args body) -> (beta (lambda args body) envr)
+					m->valu = mkcons(m, mkref(BLT_BETA, BUILTIN), mkcons(m, m->expr, m->envr));
+					vmreturn(m);
+					goto again;
+				}
+				if(blt == BLT_QUOTE){
+					// (quote args) -> args
+					m->valu = vmload(m, vmload(m, m->expr, 1), 0); // expr = cdar expr
+					vmreturn(m);
+					goto again;
+				}
 			}
 
 			// at this point we know it is a list, and that it is
@@ -796,171 +847,170 @@ again:
 	case APPLY:
 			m->expr = m->valu;
 			head = vmload(m, m->expr, 0);
-			if(head == m->add || head == m->sub || head == m->mul || head == m->div || head == m->rem){
-				ref_t ref0, ref;
-				long long ires;
-				double fres;
-				m->expr = vmload(m, m->expr, 1);
-				ref0 = vmload(m, m->expr, 0);
-				if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
-					ires = loadint(m, ref0);
-				} else if(reftag(ref0) == FLOAT){
-					fres = loadfloat(m, ref0);
-				} else {
-					m->valu = ERROR;
-					vmreturn(m);
-					goto again;
-				}
-				m->expr = vmload(m, m->expr, 1);
-				while(m->expr != NIL){
-					ref = vmload(m, m->expr, 0);
-					if(reftag(ref0) != reftag(ref)){
+			if(reftag(head) == BUILTIN){
+				ref_t blt = refval(head);
+				if(blt >= BLT_ADD && blt <= BLT_REM){
+					ref_t ref0, ref;
+					long long ires;
+					double fres;
+					m->expr = vmload(m, m->expr, 1);
+					ref0 = vmload(m, m->expr, 0);
+					if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
+						ires = loadint(m, ref0);
+					} else if(reftag(ref0) == FLOAT){
+						fres = loadfloat(m, ref0);
+					} else {
 						m->valu = ERROR;
 						vmreturn(m);
 						goto again;
 					}
+					m->expr = vmload(m, m->expr, 1);
+					while(m->expr != NIL){
+						ref = vmload(m, m->expr, 0);
+						if(reftag(ref0) != reftag(ref)){
+							m->valu = ERROR;
+							vmreturn(m);
+							goto again;
+						}
+						if(reftag(ref0) == FLOAT){
+							double tmp = loadfloat(m, ref);
+							if(blt == BLT_ADD)
+								fres += tmp;
+							else if(blt == BLT_SUB)
+								fres -= tmp;
+							else if(blt == BLT_MUL)
+								fres *= tmp;
+							else if(blt == BLT_DIV)
+								fres /= tmp;
+							else if(blt == BLT_REM)
+								fres = fmod(fres, tmp);
+						} else {
+							long long tmp = loadint(m, ref);
+							if(blt == BLT_ADD)
+								ires += tmp;
+							else if(blt == BLT_SUB)
+								ires -= tmp;
+							else if(blt == BLT_MUL)
+								ires *= tmp;
+							else if(blt == BLT_DIV)
+								ires /= tmp;
+							else if(blt == BLT_REM)
+								ires %= tmp;
+						}
+						m->expr = vmload(m, m->expr, 1);
+					}
 					if(reftag(ref0) == FLOAT){
-						double tmp = loadfloat(m, ref);
-						if(head == m->add)
-							fres += tmp;
-						else if(head == m->sub)
-							fres -= tmp;
-						else if(head == m->mul)
-							fres *= tmp;
-						else if(head == m->div)
-							fres /= tmp;
-						else if(head == m->rem)
-							fres = fmod(fres, tmp);
+						m->valu = mkfloat(m, fres);
 					} else {
-						long long tmp = loadint(m, ref);
-						if(head == m->add)
-							ires += tmp;
-						else if(head == m->sub)
-							ires -= tmp;
-						else if(head == m->mul)
-							ires *= tmp;
-						else if(head == m->div)
-							ires /= tmp;
-						else if(head == m->rem)
-							ires %= tmp;
+						m->valu = mkint(m, ires);
 					}
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_NULL){ // (null? ...)
+					ref_t ref0;
 					m->expr = vmload(m, m->expr, 1);
-				}
-				if(reftag(ref0) == FLOAT){
-					m->valu = mkfloat(m, fres);
-				} else {
-					m->valu = mkint(m, ires);
-				}
-				vmreturn(m);
-				goto again;
-			} else if(head == m->null){ // (null? ...)
-				ref_t ref0;
-				m->expr = vmload(m, m->expr, 1);
-				ref0 = vmload(m, m->expr, 0);
-				if(reftag(ref0) == CONS){
-					if(ref0 == NIL)
-						m->valu = m->truth;
-					else
-						m->valu = m->untruth;
-				} else {
-					m->valu = m->untruth;
-				}
-				vmreturn(m);
-				goto again;
-			} else if(head == m->eq){ // (eq? ...)
-				ref_t ref0;
-				m->expr = vmload(m, m->expr, 1);
-				ref0 = vmload(m, m->expr, 0);
-				m->expr = vmload(m, m->expr, 1);
-				while(m->expr != NIL){
-					ref_t ref = vmload(m, m->expr, 0);
-					if(reftag(ref0) != reftag(ref)){
-						m->valu = m->untruth;
-						goto eqdone;
+					ref0 = vmload(m, m->expr, 0);
+					if(reftag(ref0) == CONS){
+						if(ref0 == NIL)
+							m->valu = mkref(BLT_TRUTH, BUILTIN);
+						else
+							m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+					} else {
+						m->valu = mkref(BLT_UNTRUTH, BUILTIN);
 					}
-					if(reftag(ref0) == FLOAT){
-						double v0, v;
-						v0 = loadfloat(m, ref0);
-						v = loadfloat(m, ref);
-						if(v0 != v){
-							m->valu = m->untruth;
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_EQ){ // (eq? ...)
+					ref_t ref0;
+					m->expr = vmload(m, m->expr, 1);
+					ref0 = vmload(m, m->expr, 0);
+					m->expr = vmload(m, m->expr, 1);
+					while(m->expr != NIL){
+						ref_t ref = vmload(m, m->expr, 0);
+						if(reftag(ref0) != reftag(ref)){
+							m->valu = mkref(BLT_UNTRUTH, BUILTIN);
 							goto eqdone;
 						}
-					} else if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
-						long long v0, v;
-						v0 = loadint(m, ref0);
-						v = loadint(m, ref);
-						if(v0 != v){
-							m->valu = m->untruth;
+						if(reftag(ref0) == FLOAT){
+							double v0, v;
+							v0 = loadfloat(m, ref0);
+							v = loadfloat(m, ref);
+							if(v0 != v){
+								m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+								goto eqdone;
+							}
+						} else if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
+							long long v0, v;
+							v0 = loadint(m, ref0);
+							v = loadint(m, ref);
+							if(v0 != v){
+								m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+								goto eqdone;
+							}
+						}
+						if(refval(ref0) != refval(ref)){
+							m->valu = mkref(BLT_UNTRUTH, BUILTIN);
 							goto eqdone;
 						}
+						m->expr = vmload(m, m->expr, 1);
 					}
-					if(refval(ref0) != refval(ref)){
-						m->valu = m->untruth;
-						goto eqdone;
-					}
+					m->valu = mkref(BLT_TRUTH, BUILTIN);
+				eqdone:
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_LESS){
+					ref_t ref0, ref1;
 					m->expr = vmload(m, m->expr, 1);
+					ref0 = vmload(m, m->expr, 0);
+					m->expr = vmload(m, m->expr, 1);
+					ref1 = vmload(m, m->expr, 0);
+					m->valu = mkref(BLT_UNTRUTH, BUILTIN); // default to false.
+					if((reftag(ref0) == INTEGER || reftag(ref0) == BIGINT)
+					&& (reftag(ref1) == INTEGER || reftag(ref1) == BIGINT)){
+						long long i0, i1;
+						i0 = loadint(m, ref0);
+						i1 = loadint(m, ref1);
+						if(i0 < i1)
+							m->valu = mkref(BLT_TRUTH, BUILTIN);
+					} else if(reftag(ref0) == FLOAT && reftag(ref1) == FLOAT){
+						double f0, f1;
+						f0 = loadfloat(m, ref0);
+						f1 = loadfloat(m, ref1);
+						if(f0 < f1)
+							m->valu = mkref(BLT_TRUTH, BUILTIN);
+					} else if((reftag(ref0) == SYMBOL && reftag(ref1) == SYMBOL)
+						|| (reftag(ref0) == STRING && reftag(ref1) == STRING)){
+						if(strcmp((char*)pointer(m, ref0), (char*)pointer(m, ref1)) < 0)
+							m->valu = mkref(BLT_TRUTH, BUILTIN);
+					} else if(reftag(ref0) < reftag(ref1)){
+						m->valu = mkref(BLT_TRUTH, BUILTIN);
+					}
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_CAR){
+					m->reg2 = vmload(m, m->expr, 1);
+					m->reg2 = vmload(m, m->reg2, 0);
+					m->valu = vmload(m, m->reg2, 0);
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_CDR){
+					m->reg2 = vmload(m, m->expr, 1);
+					m->reg2 = vmload(m, m->reg2, 0);
+					m->valu = vmload(m, m->reg2, 1);
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_CONS){
+					m->reg2 = vmload(m, m->expr, 1);
+					m->reg3 = vmload(m, m->reg2, 1);
+					m->reg2 = vmload(m, m->reg2, 0);
+					m->reg3 = vmload(m, m->reg3, 0);
+					m->valu = mkcons(m, m->reg2, m->reg3);
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_EXTCALL){
+					vmgoto(m, CONTINUE);
+					return 1;
 				}
-				m->valu = m->truth;
-			eqdone:
-				vmreturn(m);
-				goto again;
-			} else if(head == m->less){
-				ref_t ref0, ref1;
-				m->expr = vmload(m, m->expr, 1);
-				ref0 = vmload(m, m->expr, 0);
-				m->expr = vmload(m, m->expr, 1);
-				ref1 = vmload(m, m->expr, 0);
-				m->valu = m->untruth; // default to false.
-				if((reftag(ref0) == INTEGER || reftag(ref0) == BIGINT)
-				&& (reftag(ref1) == INTEGER || reftag(ref1) == BIGINT)){
-					long long i0, i1;
-					i0 = loadint(m, ref0);
-					i1 = loadint(m, ref1);
-					if(i0 < i1)
-						m->valu = m->truth;
-				} else if(reftag(ref0) == FLOAT && reftag(ref1) == FLOAT){
-					double f0, f1;
-					f0 = loadfloat(m, ref0);
-					f1 = loadfloat(m, ref1);
-					if(f0 < f1)
-						m->valu = m->truth;
-				} else if((reftag(ref0) == SYMBOL && reftag(ref1) == SYMBOL)
-					|| (reftag(ref0) == STRING && reftag(ref1) == STRING)){
-					if(strcmp((char*)pointer(m, ref0), (char*)pointer(m, ref1)) < 0)
-						m->valu = m->truth;
-				} else if(reftag(ref0) < reftag(ref1)){
-					m->valu = m->truth;
-				}
-				vmreturn(m);
-				goto again;
-			} else if(head == m->car){
-				m->reg2 = vmload(m, m->expr, 1);
-				m->reg2 = vmload(m, m->reg2, 0);
-				m->valu = vmload(m, m->reg2, 0);
-				vmreturn(m);
-				goto again;
-			} else if(head == m->cdr){
-				m->reg2 = vmload(m, m->expr, 1);
-				m->reg2 = vmload(m, m->reg2, 0);
-				m->valu = vmload(m, m->reg2, 1);
-				vmreturn(m);
-				goto again;
-			} else if(head == m->cons){
-				m->reg2 = vmload(m, m->expr, 1);
-				m->reg3 = vmload(m, m->reg2, 1);
-				m->reg2 = vmload(m, m->reg2, 0);
-				m->reg3 = vmload(m, m->reg3, 0);
-				m->valu = mkcons(m, m->reg2, m->reg3);
-				vmreturn(m);
-				goto again;
-			} else if(head == m->extcall){
-				m->inst = CONTINUE;
-				return 1;
-			} else if(issymbol(m, head)){
-				fprintf(stderr, "apply: head is a symbol: %s\n", (char *)pointer(m, head));
-				vmreturn(m);
-				goto again;
 			} else if(iscons(m, head)){
 	case BETA:
 				// save old environment to stack.
@@ -1030,7 +1080,7 @@ again:
 				vmreturn(m);
 				goto again;
 			} else {
-				fprintf(stderr, "apply: head not symbol: ");
+				fprintf(stderr, "apply: head is weird: ");
 				eval_print(m);
 				fprintf(stderr, "\n");
 				vmreturn(m);
@@ -1103,7 +1153,7 @@ setbit(uint32_t *map, size_t i)
 }
 
 ref_t
-vmcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, ref_t *mem, ref_t ref)
+vmcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, Mach *oldm, ref_t ref)
 {
 	ref_t nref;
 	size_t off;
@@ -1116,24 +1166,27 @@ vmcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, ref_t *mem, ref_t ref)
 	case CONS:
 		if(ref == NIL)
 			return NIL;
-		nref = mkcons(m, mem[urefval(ref)], mem[urefval(ref)+1]);
+		nref = mkcons(m, vmload(oldm, ref, 0), vmload(oldm, ref, 1));
 		goto forw;
 	case BIGINT:
-		nref = mkint(m, *(long long *)(mem+urefval(ref)));
+		nref = mkint(m, loadint(oldm, ref));
 		goto forw;
 	case FLOAT:
-		nref = mkfloat(m, *(double *)(mem+urefval(ref)));
+		nref = mkfloat(m, loadfloat(oldm, ref));
 		goto forw;
 	case STRING:
 	case SYMBOL:
-		fprintf(stderr, "gc: %s: %s\n", reftag(ref) == SYMBOL ? "symbol" : "string", (char *)(mem+urefval(ref)));
-		nref = mkstring(m, (char *)(mem+urefval(ref)), reftag(ref));
+		fprintf(stderr, "gc: %s: %s\n",
+			reftag(ref) == SYMBOL ? "symbol" : "string",
+			(char *)pointer(oldm, ref));
+		nref = mkstring(m, (char *)pointer(oldm, ref), reftag(ref));
 	forw:
-		mem[urefval(ref)] = nref;
+		vmstore(oldm, ref, 0, nref);
 		setbit(isforw, urefval(ref));
 		break;
 	case INTEGER:
 	case ERROR:
+	case BUILTIN:
 		nref = ref;
 		break;
 	}
@@ -1149,13 +1202,14 @@ vmgc(Mach *m)
 	size_t i;
 	uint32_t *isatom;
 	uint32_t *isforw;
-	ref_t *oldmem;
+	Mach oldm;
+
+	memcpy(&oldm, m, sizeof oldm);
 
 fprintf(stderr, "gc start: %zd\n", m->memlen);
 
 	isatom = allocbit(m->memlen);
 	isforw = allocbit(m->memlen);
-	oldmem = m->mem;
 	m->mem = NULL;
 	m->memcap = 0;
 	m->memlen = 0;
@@ -1163,19 +1217,25 @@ fprintf(stderr, "gc start: %zd\n", m->memlen);
 	m->idxlen = 0;
 
 	ref_t *refp;
-	for(refp = &m->reg0; refp <= &m->extcall; refp++)
-		*refp = vmcopy(m, isatom, isforw, oldmem, *refp);
+	for(refp = &m->reg0; refp <= &m->stak; refp++)
+		*refp = vmcopy(m, isatom, isforw, &oldm, *refp);
 
 	for(i = 0; i < m->memlen; i++){
+		if(reftag(m->mem[i]) == INTEGER)
+			continue;
+		if(reftag(m->mem[i]) == ERROR)
+			continue;
+		if(reftag(m->mem[i]) == BUILTIN)
+			continue;
 		if(getbit(isatom, i) != 0)
 			continue;
 		if(getbit(isforw, urefval(m->mem[i])) != 0)
-			m->mem[i] = oldmem[urefval(m->mem[i])];
+			m->mem[i] = vmload(&oldm, m->mem[i], 0);
 		else
-			m->mem[i] = vmcopy(m, isatom, isforw, oldmem, m->mem[i]);
+			m->mem[i] = vmcopy(m, isatom, isforw, &oldm, m->mem[i]);
 	}
 
-	free(oldmem);
+	free(oldm.mem);
 	free(isatom);
 	free(isforw);
 
@@ -1194,30 +1254,11 @@ main(void)
 	// install empty environment.
 	m.envr = mkcons(&m, NIL, NIL);
 
-	// register built-in symbols.
-	m._if = mkstring(&m, "if", SYMBOL);
-	m.beta = mkstring(&m, "beta", SYMBOL);
-	m.define = mkstring(&m, "define", SYMBOL);
-	m.lambda = mkstring(&m, "lambda", SYMBOL);
-	m.quote = mkstring(&m, "quote", SYMBOL);
-
-	m.extcall = mkstring(&m, "extcall", SYMBOL);
-
-	m.cons = mkstring(&m, "cons", SYMBOL);
-	m.car = mkstring(&m, "car", SYMBOL);
-	m.cdr = mkstring(&m, "cdr", SYMBOL);
-	m.add = mkstring(&m, "+", SYMBOL);
-	m.sub = mkstring(&m, "-", SYMBOL);
-	m.mul = mkstring(&m, "*", SYMBOL);
-	m.div = mkstring(&m, "/", SYMBOL);
-	m.rem = mkstring(&m, "%", SYMBOL);
-
-	m.eq = mkstring(&m, "eq?", SYMBOL);
-	m.null = mkstring(&m, "null?", SYMBOL);
-	m.less = mkstring(&m, "<", SYMBOL);
-
-	m.truth = mkstring(&m, "#t", SYMBOL);
-	m.untruth = mkstring(&m, "#f", SYMBOL);
+	for(i = 0; i < NUM_BLT; i++){
+		ref_t sym;
+		sym = mkstring(&m, bltnames[i], SYMBOL);
+		vmdefine(&m, sym, mkref(i, BUILTIN));
+	}
 
 	vmgc(&m);
 

@@ -17,7 +17,7 @@ OFILES=\
 	basiclisp.$(O)\
 
 basiclisp$(EXE): $(OFILES)
-	$(CC) -o $@ $(OFILES) $(LIBS)
+	$(CC) $(LDFLAGS) -o $@ $(OFILES) $(LIBS)
 
 clean:
 	$(RM) basiclisp$(EXE) *.$(O)
