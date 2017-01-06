@@ -87,6 +87,8 @@ struct Mach {
 	size_t tokcap;
 
 	int lineno;
+
+	int inbeta;
 };
 
 static char *bltnames[] = {
@@ -682,7 +684,7 @@ vmgoto(Mach *m, ref_t inst)
 static void
 vmcall(Mach *m, ref_t ret, ref_t inst)
 {
-	m->stak = mkcons(m, ret, m->stak);
+	m->stak = mkcons(m, mkref(ret, BUILTIN), m->stak);
 	vmgoto(m, inst);
 }
 
@@ -692,7 +694,7 @@ vmreturn(Mach *m)
 	ref_t inst;
 	inst = vmload(m, m->stak, 0);
 	m->stak = vmload(m, m->stak, 1);
-	vmgoto(m, inst);
+	m->inst = inst;
 }
 
 static void
@@ -706,14 +708,21 @@ vmdefine(Mach *m, ref_t sym, ref_t val)
 	vmstore(m, m->envr, 1, *env);
 }
 
+void vmgc(Mach *m);
+
 int
 vmstep(Mach *m)
 {
 	size_t i;
 again:
+	vmgc(m);
+	if(reftag(m->inst) != BUILTIN){
+		fprintf(stderr, "vmstep: inst is not built-in, stack corruption?\n");
+		abort();
+	}
 	switch(refval(m->inst)){
 	default:
-		fprintf(stderr, "vmstep: invalid instruction %d, bailing out.\n", m->inst);
+		fprintf(stderr, "vmstep: invalid instruction %ld, bailing out.\n", refval(m->inst));
 	case CONTINUE:
 		vmreturn(m);
 		goto again;
@@ -793,7 +802,6 @@ again:
 					// current environment gets sym associated with val.
 					ref_t *sym = &m->reg2;
 					ref_t *val = &m->reg3;
-					ref_t *env = &m->reg3; // used after vmcall..
 					*sym = vmload(m, m->expr, 1);
 					*val = vmload(m, *sym, 1);
 					*sym = vmload(m, *sym, 0);
@@ -806,10 +814,14 @@ again:
 					}
 					m->stak = mkcons(m, *sym, m->stak);
 					m->expr = *val;
+					*sym = NIL;
+					*val = NIL;
 
 					vmcall(m, DEFINE1, EVAL);
 					goto again;
-		case DEFINE1:
+	case DEFINE1:
+					sym = &m->reg2;
+					ref_t *env = &m->reg3;
 					// restore sym from stak, construct (sym . val)
 					*sym = vmload(m, m->stak, 0);
 					m->stak = vmload(m, m->stak, 1);
@@ -1070,10 +1082,20 @@ again:
 					m->expr = vmload(m, m->reg2, 0);
 					m->reg2 = vmload(m, m->reg2, 1);
 					vmstore(m, m->stak, 0, m->reg2);
-					// if reg2 == nil, this is a tail position.
-					vmcall(m, BETA1, EVAL);
-					goto again;
+					if(m->reg2 != NIL || m->inbeta == 0){ // tail call
+						if(m->reg2 == NIL)
+							m->inbeta++;
+						vmcall(m, BETA1, EVAL);
+						goto again;
+					} else {
+						m->stak = vmload(m, m->stak, 1); // pop expr
+						m->stak = vmload(m, m->stak, 1); // pop envr
+						vmgoto(m, EVAL);
+						goto again;
+					}
 				}
+				m->inbeta--;
+fprintf(stderr, "beta: never happens\n");
 				m->stak = vmload(m, m->stak, 1); // pop expr (body-list).
 				m->envr = vmload(m, m->stak, 0); // restore environment
 				m->stak = vmload(m, m->stak, 1); // pop environment
@@ -1107,6 +1129,8 @@ listeval_first:
 			m->expr = vmload(m, m->reg3, 0);
 			m->reg3 = vmload(m, m->reg3, 1);
 			vmstore(m, m->reg2, 0, m->reg3);
+			m->reg2 = NIL;
+			m->reg3 = NIL;
 			vmcall(m, LISTEVAL1, EVAL);
 			goto again;
 		}
@@ -1176,9 +1200,7 @@ vmcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, Mach *oldm, ref_t ref)
 		goto forw;
 	case STRING:
 	case SYMBOL:
-		fprintf(stderr, "gc: %s: %s\n",
-			reftag(ref) == SYMBOL ? "symbol" : "string",
-			(char *)pointer(oldm, ref));
+		//fprintf(stderr, "gc: %s: %s\n", reftag(ref) == SYMBOL ? "symbol" : "string", (char *)pointer(oldm, ref));
 		nref = mkstring(m, (char *)pointer(oldm, ref), reftag(ref));
 	forw:
 		vmstore(oldm, ref, 0, nref);
@@ -1229,7 +1251,8 @@ fprintf(stderr, "gc start: %zd\n", m->memlen);
 	m->stak = vmcopy(m, isatom, isforw, &oldm, oldm.stak);
 
 	// cheney style breadth first scan, m->memlen effectively
-	// acts as the "tail" while i is the "head".
+	// acts as the "tail" while i is the "head", and pointers
+	// between i and tail are yet to be converted (forwarded)
 	for(i = 0; i < m->memlen; i++){
 		switch(reftag(m->mem[i])){
 		case INTEGER:
