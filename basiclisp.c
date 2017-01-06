@@ -38,8 +38,8 @@ enum {
 	BLT_EQ,
 	BLT_NULL,
 	BLT_LESS,
-	BLT_TRUTH,
-	BLT_UNTRUTH,
+	BLT_TRUE,
+	BLT_FALSE,
 	NUM_BLT,
 
 	// states for vmstep()
@@ -776,7 +776,7 @@ again:
 					m->expr = vmload(m, m->stak, 0);
 					m->stak = vmload(m, m->stak, 1);
 					m->expr = vmload(m, m->expr, 1);
-					if(m->valu == MKREF(BLT_UNTRUTH, BUILTIN))
+					if(m->valu == MKREF(BLT_FALSE, BUILTIN))
 						m->expr = vmload(m, m->expr, 1);
 					m->expr = vmload(m, m->expr, 0);
 					vmgoto(m, EVAL);
@@ -912,11 +912,11 @@ again:
 					ref0 = vmload(m, m->expr, 0);
 					if(reftag(ref0) == CONS){
 						if(ref0 == NIL)
-							m->valu = mkref(BLT_TRUTH, BUILTIN);
+							m->valu = mkref(BLT_TRUE, BUILTIN);
 						else
-							m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+							m->valu = mkref(BLT_FALSE, BUILTIN);
 					} else {
-						m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+						m->valu = mkref(BLT_FALSE, BUILTIN);
 					}
 					vmreturn(m);
 					goto again;
@@ -928,7 +928,7 @@ again:
 					while(m->expr != NIL){
 						ref_t ref = vmload(m, m->expr, 0);
 						if(reftag(ref0) != reftag(ref)){
-							m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+							m->valu = mkref(BLT_FALSE, BUILTIN);
 							goto eqdone;
 						}
 						if(reftag(ref0) == FLOAT){
@@ -936,7 +936,7 @@ again:
 							v0 = loadfloat(m, ref0);
 							v = loadfloat(m, ref);
 							if(v0 != v){
-								m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+								m->valu = mkref(BLT_FALSE, BUILTIN);
 								goto eqdone;
 							}
 						} else if(reftag(ref0) == INTEGER || reftag(ref0) == BIGINT){
@@ -944,17 +944,17 @@ again:
 							v0 = loadint(m, ref0);
 							v = loadint(m, ref);
 							if(v0 != v){
-								m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+								m->valu = mkref(BLT_FALSE, BUILTIN);
 								goto eqdone;
 							}
 						}
 						if(refval(ref0) != refval(ref)){
-							m->valu = mkref(BLT_UNTRUTH, BUILTIN);
+							m->valu = mkref(BLT_FALSE, BUILTIN);
 							goto eqdone;
 						}
 						m->expr = vmload(m, m->expr, 1);
 					}
-					m->valu = mkref(BLT_TRUTH, BUILTIN);
+					m->valu = mkref(BLT_TRUE, BUILTIN);
 				eqdone:
 					vmreturn(m);
 					goto again;
@@ -964,26 +964,26 @@ again:
 					ref0 = vmload(m, m->expr, 0);
 					m->expr = vmload(m, m->expr, 1);
 					ref1 = vmload(m, m->expr, 0);
-					m->valu = mkref(BLT_UNTRUTH, BUILTIN); // default to false.
+					m->valu = mkref(BLT_FALSE, BUILTIN); // default to false.
 					if((reftag(ref0) == INTEGER || reftag(ref0) == BIGINT)
 					&& (reftag(ref1) == INTEGER || reftag(ref1) == BIGINT)){
 						long long i0, i1;
 						i0 = loadint(m, ref0);
 						i1 = loadint(m, ref1);
 						if(i0 < i1)
-							m->valu = mkref(BLT_TRUTH, BUILTIN);
+							m->valu = mkref(BLT_TRUE, BUILTIN);
 					} else if(reftag(ref0) == FLOAT && reftag(ref1) == FLOAT){
 						double f0, f1;
 						f0 = loadfloat(m, ref0);
 						f1 = loadfloat(m, ref1);
 						if(f0 < f1)
-							m->valu = mkref(BLT_TRUTH, BUILTIN);
+							m->valu = mkref(BLT_TRUE, BUILTIN);
 					} else if((reftag(ref0) == SYMBOL && reftag(ref1) == SYMBOL)
 						|| (reftag(ref0) == STRING && reftag(ref1) == STRING)){
 						if(strcmp((char*)pointer(m, ref0), (char*)pointer(m, ref1)) < 0)
-							m->valu = mkref(BLT_TRUTH, BUILTIN);
+							m->valu = mkref(BLT_TRUE, BUILTIN);
 					} else if(reftag(ref0) < reftag(ref1)){
-						m->valu = mkref(BLT_TRUTH, BUILTIN);
+						m->valu = mkref(BLT_TRUE, BUILTIN);
 					}
 					vmreturn(m);
 					goto again;
@@ -1216,23 +1216,34 @@ fprintf(stderr, "gc start: %zd\n", m->memlen);
 	m->idxcap = 0;
 	m->idxlen = 0;
 
-	ref_t *refp;
-	for(refp = &m->reg0; refp <= &m->stak; refp++)
-		*refp = vmcopy(m, isatom, isforw, &oldm, *refp);
+	// copy registers as roots.
+	m->reg0 = vmcopy(m, isatom, isforw, &oldm, oldm.reg0);
+	m->reg1 = vmcopy(m, isatom, isforw, &oldm, oldm.reg1);
+	m->reg2 = vmcopy(m, isatom, isforw, &oldm, oldm.reg2);
+	m->reg3 = vmcopy(m, isatom, isforw, &oldm, oldm.reg3);
+	m->reg4 = vmcopy(m, isatom, isforw, &oldm, oldm.reg4);
 
+	m->valu = vmcopy(m, isatom, isforw, &oldm, oldm.valu);
+	m->expr = vmcopy(m, isatom, isforw, &oldm, oldm.expr);
+	m->envr = vmcopy(m, isatom, isforw, &oldm, oldm.envr);
+	m->stak = vmcopy(m, isatom, isforw, &oldm, oldm.stak);
+
+	// cheney style breadth first scan, m->memlen effectively
+	// acts as the "tail" while i is the "head".
 	for(i = 0; i < m->memlen; i++){
-		if(reftag(m->mem[i]) == INTEGER)
+		switch(reftag(m->mem[i])){
+		case INTEGER:
+		case ERROR:
+		case BUILTIN:
 			continue;
-		if(reftag(m->mem[i]) == ERROR)
-			continue;
-		if(reftag(m->mem[i]) == BUILTIN)
-			continue;
-		if(getbit(isatom, i) != 0)
-			continue;
-		if(getbit(isforw, urefval(m->mem[i])) != 0)
-			m->mem[i] = vmload(&oldm, m->mem[i], 0);
-		else
-			m->mem[i] = vmcopy(m, isatom, isforw, &oldm, m->mem[i]);
+		default:
+			if(getbit(isatom, i) != 0)
+				continue;
+			if(getbit(isforw, urefval(m->mem[i])) != 0)
+				m->mem[i] = vmload(&oldm, m->mem[i], 0);
+			else
+				m->mem[i] = vmcopy(m, isatom, isforw, &oldm, m->mem[i]);
+		}
 	}
 
 	free(oldm.mem);
