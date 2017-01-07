@@ -89,6 +89,7 @@ struct Mach {
 	int lineno;
 
 	int inbeta;
+	int ingc;
 };
 
 static char *bltnames[] = {
@@ -335,10 +336,16 @@ again:
 	return -1;
 }
 
+void vmgc(Mach *m);
+
 static ref_t
 allocate(Mach *m, size_t num, int tag)
 {
 	ref_t ref;
+
+	// first, try gc.
+	if(!m->ingc && (m->memcap - m->memlen) < num)
+		vmgc(m);
 recheck:
 	if((m->memcap - m->memlen) < num){
 		m->memcap = (m->memcap == 0) ? 256 : 2*m->memcap;
@@ -506,6 +513,7 @@ listparse(Mach *m, FILE *fp, int justone)
 	int ltok;
 	int dot = 0;
 
+m->ingc++;
 	while((ltok = lex(m, fp)) != -1){
 		tokappend(m, '\0');
 		switch(ltok){
@@ -513,7 +521,7 @@ listparse(Mach *m, FILE *fp, int justone)
 			fprintf(stderr, "unknown token %d: '%c' '%s'\n", ltok, ltok, m->tok);
 			break;
 		case ')':
-			return list;
+			goto done;
 		case '(':
 			nval = listparse(m, fp, 0);
 			goto append;
@@ -539,8 +547,10 @@ listparse(Mach *m, FILE *fp, int justone)
 		case SYMBOL:
 			nval = mkstring(m, m->tok, SYMBOL);
 		append:
-			if(justone)
-				return nval;
+			if(justone){
+				list = nval;
+				goto done;
+			}
 			if(dot == 0){
 				cons = mkcons(m, nval, NIL);
 				if(prev != NIL)
@@ -553,15 +563,15 @@ listparse(Mach *m, FILE *fp, int justone)
 				dot++;
 			} else {
 				fprintf(stderr, "malformed s-expression, bad use of '.'\n");
-				return list;
+				goto done;
 			}
 			break;
 		}
 	}
 	if(ltok == -1)
-		return ERROR;
-	// should return error I think, but it's perhaps convenient
-	// to treat EOF as end-of-list.
+		list = ERROR;
+done:
+m->ingc--;
 	return list;
 }
 
@@ -593,6 +603,12 @@ atomprint(Mach *m, ref_t aref, FILE *fp)
 	switch(tag){
 	default:
 		fprintf(stderr, "listprint: unknown atom: val:%zx tag:%x\n", refval(aref), reftag(aref));
+		break;
+	case BUILTIN:
+		if(refval(aref) >= 0 && refval(aref) < NUM_BLT)
+			fprintf(fp, "%s", bltnames[refval(aref)]);
+		else
+			fprintf(fp, "blt-0x%zx", refval(aref));
 		break;
 	case ERROR:
 		fprintf(fp, "error %zx\n", refval(aref));
@@ -632,6 +648,7 @@ eval_print(Mach *m)
 	ref_t *list = &m->reg3;
 	ref_t *valu = &m->reg4;
 
+m->ingc++;
 	// skip over the 'print symbol in head position.
 	// *valu = vmload(m, m->expr, 1);
 	*valu = m->expr;
@@ -673,6 +690,8 @@ done:
 	*stak = NIL;
 	*list = NIL;
 	*valu = NIL;
+m->ingc--;
+
 }
 
 static void
@@ -708,14 +727,12 @@ vmdefine(Mach *m, ref_t sym, ref_t val)
 	vmstore(m, m->envr, 1, *env);
 }
 
-void vmgc(Mach *m);
 
 int
 vmstep(Mach *m)
 {
 	size_t i;
 again:
-	vmgc(m);
 	if(reftag(m->inst) != BUILTIN){
 		fprintf(stderr, "vmstep: inst is not built-in, stack corruption?\n");
 		abort();
@@ -758,6 +775,7 @@ again:
 			// evaluating args.
 
 			// TODO: evaluating the head element here is a bit of a hack.
+
 			ref_t head;
 			m->stak = mkcons(m, m->expr, m->stak);
 			m->expr = vmload(m, m->expr, 0);
@@ -802,12 +820,14 @@ again:
 					// current environment gets sym associated with val.
 					ref_t *sym = &m->reg2;
 					ref_t *val = &m->reg3;
+					ref_t *tmp = &m->reg4;
 					*sym = vmload(m, m->expr, 1);
 					*val = vmload(m, *sym, 1);
 					*sym = vmload(m, *sym, 0);
 					if(iscons(m, *sym)){
 						// scheme shorthand: (define (name args...) body1 body2...).
-						*val = mkcons(m, mkref(BLT_LAMBDA, BUILTIN), mkcons(m, vmload(m, *sym, 1), *val));
+						*tmp = mkcons(m, vmload(m, *sym, 1), *val);
+						*val = mkcons(m, mkref(BLT_LAMBDA, BUILTIN), *tmp);
 						*sym = vmload(m, *sym, 0);
 					} else {
 						*val = vmload(m, *val, 0);
@@ -836,11 +856,14 @@ again:
 
 					m->valu = NIL;
 					vmreturn(m);
+
 					goto again;
 				}
 				if(blt == BLT_LAMBDA){
 					// (lambda args body) -> (beta (lambda args body) envr)
-					m->valu = mkcons(m, mkref(BLT_BETA, BUILTIN), mkcons(m, m->expr, m->envr));
+					ref_t *tmp = &m->reg2;
+					*tmp = mkcons(m, m->expr, m->envr);
+					m->valu = mkcons(m, mkref(BLT_BETA, BUILTIN), *tmp);
 					vmreturn(m);
 					goto again;
 				}
@@ -1003,12 +1026,14 @@ again:
 					m->reg2 = vmload(m, m->expr, 1);
 					m->reg2 = vmload(m, m->reg2, 0);
 					m->valu = vmload(m, m->reg2, 0);
+					m->reg2 = NIL;
 					vmreturn(m);
 					goto again;
 				} else if(blt == BLT_CDR){
 					m->reg2 = vmload(m, m->expr, 1);
 					m->reg2 = vmload(m, m->reg2, 0);
 					m->valu = vmload(m, m->reg2, 1);
+					m->reg2 = NIL;
 					vmreturn(m);
 					goto again;
 				} else if(blt == BLT_CONS){
@@ -1017,6 +1042,8 @@ again:
 					m->reg2 = vmload(m, m->reg2, 0);
 					m->reg3 = vmload(m, m->reg3, 0);
 					m->valu = mkcons(m, m->reg2, m->reg3);
+					m->reg2 = NIL;
+					m->reg3 = NIL;
 					vmreturn(m);
 					goto again;
 				} else if(blt == BLT_EXTCALL){
@@ -1048,10 +1075,11 @@ again:
 					// them as pairs to the environment
 					*argnames = vmload(m, *argnames, 0);
 					while(iscons(m, *argnames) && iscons(m, *args)){
-						ref_t pair = mkcons(m,
+						ref_t *pair = &m->reg4;
+						*pair = mkcons(m,
 							vmload(m, *argnames, 0),
 							vmload(m, *args, 0));
-						m->envr = mkcons(m, pair, m->envr);
+						m->envr = mkcons(m, *pair, m->envr);
 						*argnames = vmload(m, *argnames, 1);
 						*args = vmload(m, *args, 1);
 					}
@@ -1061,8 +1089,9 @@ again:
 				// symbol instead of nil, associate the rest of argslist
 				// with it. notice: (lambda x (body)) also lands here.
 				if(*argnames != NIL){
-					ref_t pair = mkcons(m, *argnames, *args);
-					m->envr = mkcons(m, pair, m->envr);
+					ref_t *pair = &m->reg4;
+					*pair = mkcons(m, *argnames, *args);
+					m->envr = mkcons(m, *pair, m->envr);
 				}
 
 				// push a new 'environment head' in.
@@ -1082,12 +1111,14 @@ again:
 					m->expr = vmload(m, m->reg2, 0);
 					m->reg2 = vmload(m, m->reg2, 1);
 					vmstore(m, m->stak, 0, m->reg2);
-					if(m->reg2 != NIL || m->inbeta == 0){ // tail call
-						if(m->reg2 == NIL)
+					if(m->reg2 != NIL || m->inbeta == 0){
+						if(m->reg2 == NIL){
+fprintf(stderr, "beta: top level tail call\n");
 							m->inbeta++;
+						}
 						vmcall(m, BETA1, EVAL);
 						goto again;
-					} else {
+					} else { // tail call (reg2 is nil and inbeta is true)
 						m->stak = vmload(m, m->stak, 1); // pop expr
 						m->stak = vmload(m, m->stak, 1); // pop envr
 						vmgoto(m, EVAL);
@@ -1095,7 +1126,7 @@ again:
 					}
 				}
 				m->inbeta--;
-fprintf(stderr, "beta: never happens\n");
+fprintf(stderr, "beta: top level return\n");
 				m->stak = vmload(m, m->stak, 1); // pop expr (body-list).
 				m->envr = vmload(m, m->stak, 0); // restore environment
 				m->stak = vmload(m, m->stak, 1); // pop environment
@@ -1182,6 +1213,20 @@ vmcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, Mach *oldm, ref_t ref)
 	ref_t nref;
 	size_t off;
 
+	switch(reftag(ref)){
+	case INTEGER:
+	case ERROR:
+	case BUILTIN:
+		nref = ref;
+		goto done;
+	default:
+		if(getbit(isforw, urefval(ref)) != 0){
+			nref = vmload(oldm, ref, 0);
+			goto done;
+		}
+		break;
+	}
+
 	off = m->memlen;
 	switch(reftag(ref)){
 	default:
@@ -1206,15 +1251,13 @@ vmcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, Mach *oldm, ref_t ref)
 		vmstore(oldm, ref, 0, nref);
 		setbit(isforw, urefval(ref));
 		break;
-	case INTEGER:
-	case ERROR:
-	case BUILTIN:
-		nref = ref;
-		break;
 	}
 	if(reftag(ref) != CONS)
 		for(;off < m->memlen; off++)
 			setbit(isatom, off);
+done:
+	if(nref == NIL)
+		fprintf(stderr, "vmcopy: returning NIL!\n");
 	return nref;
 }
 
@@ -1228,7 +1271,7 @@ vmgc(Mach *m)
 
 	memcpy(&oldm, m, sizeof oldm);
 
-fprintf(stderr, "gc start: %zd\n", m->memlen);
+//fprintf(stderr, "gc start: %zd\n", m->memlen);
 
 	isatom = allocbit(m->memlen);
 	isforw = allocbit(m->memlen);
@@ -1237,6 +1280,7 @@ fprintf(stderr, "gc start: %zd\n", m->memlen);
 	m->memlen = 0;
 	m->idxcap = 0;
 	m->idxlen = 0;
+	m->ingc++;
 
 	// copy registers as roots.
 	m->reg0 = vmcopy(m, isatom, isforw, &oldm, oldm.reg0);
@@ -1244,6 +1288,7 @@ fprintf(stderr, "gc start: %zd\n", m->memlen);
 	m->reg2 = vmcopy(m, isatom, isforw, &oldm, oldm.reg2);
 	m->reg3 = vmcopy(m, isatom, isforw, &oldm, oldm.reg3);
 	m->reg4 = vmcopy(m, isatom, isforw, &oldm, oldm.reg4);
+
 
 	m->valu = vmcopy(m, isatom, isforw, &oldm, oldm.valu);
 	m->expr = vmcopy(m, isatom, isforw, &oldm, oldm.expr);
@@ -1254,26 +1299,21 @@ fprintf(stderr, "gc start: %zd\n", m->memlen);
 	// acts as the "tail" while i is the "head", and pointers
 	// between i and tail are yet to be converted (forwarded)
 	for(i = 0; i < m->memlen; i++){
-		switch(reftag(m->mem[i])){
-		case INTEGER:
-		case ERROR:
-		case BUILTIN:
+		if(getbit(isatom, i) != 0)
 			continue;
-		default:
-			if(getbit(isatom, i) != 0)
-				continue;
-			if(getbit(isforw, urefval(m->mem[i])) != 0)
-				m->mem[i] = vmload(&oldm, m->mem[i], 0);
-			else
-				m->mem[i] = vmcopy(m, isatom, isforw, &oldm, m->mem[i]);
-		}
+		m->mem[i] = vmcopy(m, isatom, isforw, &oldm, m->mem[i]);
 	}
+
+	// re-copy the registers used by cons, as vmcopy calls cons itself.
+	m->reg0 = vmcopy(m, isatom, isforw, &oldm, oldm.reg0);
+	m->reg1 = vmcopy(m, isatom, isforw, &oldm, oldm.reg1);
 
 	free(oldm.mem);
 	free(isatom);
 	free(isforw);
 
-fprintf(stderr, "gc end: %zd\n", m->memlen);
+	m->ingc--;
+//fprintf(stderr, "gc end: %zd\n", m->memlen);
 }
 
 int
@@ -1287,14 +1327,11 @@ main(void)
 
 	// install empty environment.
 	m.envr = mkcons(&m, NIL, NIL);
-
 	for(i = 0; i < NUM_BLT; i++){
 		ref_t sym;
 		sym = mkstring(&m, bltnames[i], SYMBOL);
 		vmdefine(&m, sym, mkref(i, BUILTIN));
 	}
-
-	vmgc(&m);
 
 	for(;;){
 		printf("> "); fflush(stdout);
@@ -1315,7 +1352,7 @@ main(void)
 			break;
 		m.valu = NIL;
 		m.expr = NIL;
-		vmgc(&m);
+		//vmgc(&m);
 	}
 	exit(1);
 	return 0;
