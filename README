@@ -18,7 +18,8 @@ and could use some optimization, as it calls malloc during gc
 to grow the new to-space and to allocate bitmaps for book-keeping.
 
 More than half of the code is just dealing with s-expression parsing
-and printing, neither of which is 'clean' from the 
+and printing, both of which are yet to be refactored into the GC
+compatible lisp state machine (they currently lock the gc).
 
 Lisp evaluation:
 
