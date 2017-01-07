@@ -61,7 +61,7 @@ typedef unsigned short ref_t;
 
 typedef struct Mach Mach;
 struct Mach {
-	ref_t inst; // 'instruction', a state pointer.
+	ref_t inst; // state of the vmstep state machine
 
 	ref_t reg0; // temp for mkcons.
 	ref_t reg1; // temp for mkcons.
@@ -88,8 +88,8 @@ struct Mach {
 
 	int lineno;
 
-	int inbeta;
-	int ingc;
+	int tailsafe;
+	int gclock;
 };
 
 static char *bltnames[] = {
@@ -344,7 +344,7 @@ allocate(Mach *m, size_t num, int tag)
 	ref_t ref;
 
 	// first, try gc.
-	if(!m->ingc && (m->memcap - m->memlen) < num)
+	if(!m->gclock && (m->memcap - m->memlen) < num)
 		vmgc(m);
 recheck:
 	if((m->memcap - m->memlen) < num){
@@ -513,7 +513,7 @@ listparse(Mach *m, FILE *fp, int justone)
 	int ltok;
 	int dot = 0;
 
-m->ingc++;
+m->gclock++;
 	while((ltok = lex(m, fp)) != -1){
 		tokappend(m, '\0');
 		switch(ltok){
@@ -571,7 +571,7 @@ m->ingc++;
 	if(ltok == -1)
 		list = ERROR;
 done:
-m->ingc--;
+m->gclock--;
 	return list;
 }
 
@@ -648,7 +648,7 @@ eval_print(Mach *m)
 	ref_t *list = &m->reg3;
 	ref_t *valu = &m->reg4;
 
-m->ingc++;
+m->gclock++;
 	// skip over the 'print symbol in head position.
 	// *valu = vmload(m, m->expr, 1);
 	*valu = m->expr;
@@ -690,7 +690,7 @@ done:
 	*stak = NIL;
 	*list = NIL;
 	*valu = NIL;
-m->ingc--;
+m->gclock--;
 
 }
 
@@ -1082,6 +1082,7 @@ again:
 						m->envr = mkcons(m, *pair, m->envr);
 						*argnames = vmload(m, *argnames, 1);
 						*args = vmload(m, *args, 1);
+						*pair = NIL;
 					}
 				}
 
@@ -1092,6 +1093,7 @@ again:
 					ref_t *pair = &m->reg4;
 					*pair = mkcons(m, *argnames, *args);
 					m->envr = mkcons(m, *pair, m->envr);
+					*pair = NIL;
 				}
 
 				// push a new 'environment head' in.
@@ -1111,22 +1113,20 @@ again:
 					m->expr = vmload(m, m->reg2, 0);
 					m->reg2 = vmload(m, m->reg2, 1);
 					vmstore(m, m->stak, 0, m->reg2);
-					if(m->reg2 != NIL || m->inbeta == 0){
+					if(m->reg2 != NIL || m->tailsafe == 0){
 						if(m->reg2 == NIL){
-fprintf(stderr, "beta: top level tail call\n");
-							m->inbeta++;
+							m->tailsafe++;
 						}
 						vmcall(m, BETA1, EVAL);
 						goto again;
-					} else { // tail call (reg2 is nil and inbeta is true)
+					} else { // tail call (reg2 is nil and tailsafe is true)
 						m->stak = vmload(m, m->stak, 1); // pop expr
 						m->stak = vmload(m, m->stak, 1); // pop envr
 						vmgoto(m, EVAL);
 						goto again;
 					}
 				}
-				m->inbeta--;
-fprintf(stderr, "beta: top level return\n");
+				m->tailsafe--;
 				m->stak = vmload(m, m->stak, 1); // pop expr (body-list).
 				m->envr = vmload(m, m->stak, 0); // restore environment
 				m->stak = vmload(m, m->stak, 1); // pop environment
@@ -1175,7 +1175,6 @@ listeval_first:
 			m->valu = m->reg2;
 		}
 		vmstore(m, m->valu, 1, m->reg3);
-
 		m->reg2 = NIL;
 		m->reg3 = NIL;
 		m->stak = vmload(m, m->stak, 1);
@@ -1280,11 +1279,11 @@ vmgc(Mach *m)
 	m->memlen = 0;
 	m->idxcap = 0;
 	m->idxlen = 0;
-	m->ingc++;
+	m->gclock++;
 
 	// copy registers as roots.
-	m->reg0 = vmcopy(m, isatom, isforw, &oldm, oldm.reg0);
-	m->reg1 = vmcopy(m, isatom, isforw, &oldm, oldm.reg1);
+	ref_t reg0tmp = vmcopy(m, isatom, isforw, &oldm, oldm.reg0);
+	ref_t reg1tmp = vmcopy(m, isatom, isforw, &oldm, oldm.reg1);
 	m->reg2 = vmcopy(m, isatom, isforw, &oldm, oldm.reg2);
 	m->reg3 = vmcopy(m, isatom, isforw, &oldm, oldm.reg3);
 	m->reg4 = vmcopy(m, isatom, isforw, &oldm, oldm.reg4);
@@ -1304,15 +1303,16 @@ vmgc(Mach *m)
 		m->mem[i] = vmcopy(m, isatom, isforw, &oldm, m->mem[i]);
 	}
 
-	// re-copy the registers used by cons, as vmcopy calls cons itself.
-	m->reg0 = vmcopy(m, isatom, isforw, &oldm, oldm.reg0);
-	m->reg1 = vmcopy(m, isatom, isforw, &oldm, oldm.reg1);
+	// re-copy the registers used by cons, vmcopy calls cons itself so
+	// they get overwritten over and over again during gc.
+	m->reg0 = reg0tmp;
+	m->reg1 = reg1tmp;
 
 	free(oldm.mem);
 	free(isatom);
 	free(isforw);
 
-	m->ingc--;
+	m->gclock--;
 //fprintf(stderr, "gc end: %zd\n", m->memlen);
 }
 
@@ -1325,7 +1325,7 @@ main(void)
 
 	memset(&m, 0, sizeof m);
 
-	// install empty environment.
+	// install initial environment (define built-ins)
 	m.envr = mkcons(&m, NIL, NIL);
 	for(i = 0; i < NUM_BLT; i++){
 		ref_t sym;
@@ -1352,7 +1352,6 @@ main(void)
 			break;
 		m.valu = NIL;
 		m.expr = NIL;
-		//vmgc(&m);
 	}
 	exit(1);
 	return 0;
