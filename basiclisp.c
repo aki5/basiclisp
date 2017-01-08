@@ -57,7 +57,7 @@ enum {
 
 };
 
-typedef unsigned short ref_t;
+typedef unsigned int ref_t;
 
 typedef struct Mach Mach;
 struct Mach {
@@ -88,7 +88,6 @@ struct Mach {
 
 	int lineno;
 
-	int tailsafe;
 	int gclock;
 };
 
@@ -704,6 +703,7 @@ vmgoto(Mach *m, ref_t inst)
 static void
 vmcall(Mach *m, ref_t ret, ref_t inst)
 {
+	m->stak = mkcons(m, m->envr, m->stak);
 	m->stak = mkcons(m, mkref(ret, BUILTIN), m->stak);
 	vmgoto(m, inst);
 }
@@ -711,10 +711,10 @@ vmcall(Mach *m, ref_t ret, ref_t inst)
 static void
 vmreturn(Mach *m)
 {
-	ref_t inst;
-	inst = vmload(m, m->stak, 0);
+	m->inst = vmload(m, m->stak, 0);
 	m->stak = vmload(m, m->stak, 1);
-	m->inst = inst;
+	m->envr = vmload(m, m->stak, 0);
+	m->stak = vmload(m, m->stak, 1);
 }
 
 static void
@@ -1053,9 +1053,7 @@ again:
 				}
 			} else if(iscons(m, head)){
 	case BETA:
-				// save old environment to stack.
-				// TODO: unless we were called from a tail position
-				m->stak = mkcons(m, m->envr, m->stak);
+				;
 
 				// form is ((beta (lambda...)) args)
 				// ((beta (lambda args . body) . envr) args) -> (body),
@@ -1114,23 +1112,16 @@ again:
 					m->expr = vmload(m, m->reg2, 0);
 					m->reg2 = vmload(m, m->reg2, 1);
 					vmstore(m, m->stak, 0, m->reg2);
-					if(m->reg2 != NIL || m->tailsafe == 0){
-						if(m->reg2 == NIL){
-							//m->tailsafe++;
-						}
+					if(m->reg2 != NIL){
 						vmcall(m, BETA1, EVAL);
 						goto again;
-					} else { // tail call (reg2 is nil and tailsafe is true)
+					} else { // tail call
 						m->stak = vmload(m, m->stak, 1); // pop expr
-						m->stak = vmload(m, m->stak, 1); // pop envr
 						vmgoto(m, EVAL);
 						goto again;
 					}
 				}
-				//m->tailsafe--;
 				m->stak = vmload(m, m->stak, 1); // pop expr (body-list).
-				m->envr = vmload(m, m->stak, 0); // restore environment
-				m->stak = vmload(m, m->stak, 1); // pop environment
 				vmreturn(m);
 				goto again;
 			} else {
