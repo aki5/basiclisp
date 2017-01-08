@@ -350,6 +350,7 @@ recheck:
 	if((m->memcap - m->memlen) < num){
 		m->memcap = (m->memcap == 0) ? 256 : 2*m->memcap;
 		m->mem = realloc(m->mem, m->memcap * sizeof m->mem[0]);
+		memset(m->mem + m->memlen, 0, m->memcap - m->memlen);
 		goto recheck;
 	}
 	if(m->memlen == 0){
@@ -1268,6 +1269,9 @@ vmgc(Mach *m)
 	uint32_t *isforw;
 	Mach oldm;
 
+	if(m->memlen == 0)
+		return;
+
 	memcpy(&oldm, m, sizeof oldm);
 
 //fprintf(stderr, "gc start: %zd\n", m->memlen);
@@ -1288,7 +1292,6 @@ vmgc(Mach *m)
 	m->reg3 = vmcopy(m, isatom, isforw, &oldm, oldm.reg3);
 	m->reg4 = vmcopy(m, isatom, isforw, &oldm, oldm.reg4);
 
-
 	m->valu = vmcopy(m, isatom, isforw, &oldm, oldm.valu);
 	m->expr = vmcopy(m, isatom, isforw, &oldm, oldm.expr);
 	m->envr = vmcopy(m, isatom, isforw, &oldm, oldm.envr);
@@ -1297,7 +1300,7 @@ vmgc(Mach *m)
 	// cheney style breadth first scan, m->memlen effectively
 	// acts as the "tail" while i is the "head", and pointers
 	// between i and tail are yet to be converted (forwarded)
-	for(i = 0; i < m->memlen; i++){
+	for(i = 2; i < m->memlen; i++){
 		if(getbit(isatom, i) != 0)
 			continue;
 		m->mem[i] = vmcopy(m, isatom, isforw, &oldm, m->mem[i]);
