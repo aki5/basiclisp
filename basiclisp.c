@@ -353,6 +353,7 @@ recheck:
 		memset(m->mem + m->memlen, 0, m->memcap - m->memlen);
 		goto recheck;
 	}
+	// never return NIL by accident.
 	if(m->memlen == 0){
 		m->memlen += 2;
 		goto recheck;
@@ -1115,7 +1116,7 @@ again:
 					vmstore(m, m->stak, 0, m->reg2);
 					if(m->reg2 != NIL || m->tailsafe == 0){
 						if(m->reg2 == NIL){
-							m->tailsafe++;
+							//m->tailsafe++;
 						}
 						vmcall(m, BETA1, EVAL);
 						goto again;
@@ -1126,7 +1127,7 @@ again:
 						goto again;
 					}
 				}
-				m->tailsafe--;
+				//m->tailsafe--;
 				m->stak = vmload(m, m->stak, 1); // pop expr (body-list).
 				m->envr = vmload(m, m->stak, 0); // restore environment
 				m->stak = vmload(m, m->stak, 1); // pop environment
@@ -1277,8 +1278,8 @@ vmgc(Mach *m)
 
 	isatom = allocbit(m->memlen);
 	isforw = allocbit(m->memlen);
-	m->mem = NULL;
-	m->memcap = 0;
+	m->mem = malloc(m->memcap * sizeof m->mem[0]);
+	memset(m->mem, 0, m->memcap * sizeof m->mem[0]);
 	m->memlen = 0;
 	m->idxcap = 0;
 	m->idxlen = 0;
