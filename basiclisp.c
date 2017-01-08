@@ -359,9 +359,9 @@ recheck:
 	}
 	ref = mkref(m->memlen, tag);
 	if(urefval(ref) != m->memlen || reftag(ref) != tag){
-		fprintf(stderr, "out of bits in ref: want %zx.%x got %zx.%x\n",
+		fprintf(stderr, "out of address bits in ref: want %zx.%x got %zx.%x\n",
 			m->memlen, tag, urefval(ref), reftag(ref));
-		abort();
+		exit(1);
 	}
 	m->memlen += num;
 	return ref;
@@ -378,7 +378,6 @@ fnv32a(char *str, uint32_t hval)
 	}
 	return hval;
 }
-
 
 static int
 idxinsert1(Mach *m, uint32_t hash, ref_t ref)
@@ -569,7 +568,7 @@ m->gclock++;
 			break;
 		}
 	}
-	if(ltok == -1)
+	if(justone && ltok == -1)
 		list = ERROR;
 done:
 m->gclock--;
@@ -740,7 +739,7 @@ again:
 	}
 	switch(refval(m->inst)){
 	default:
-		fprintf(stderr, "vmstep: invalid instruction %ld, bailing out.\n", refval(m->inst));
+		fprintf(stderr, "vmstep: invalid instruction %zd, bailing out.\n", refval(m->inst));
 	case CONTINUE:
 		vmreturn(m);
 		goto again;
@@ -1320,7 +1319,7 @@ vmgc(Mach *m)
 }
 
 int
-main(void)
+main(int argc, char *argv[])
 {
 	Mach m;
 	ref_t list;
@@ -1334,6 +1333,29 @@ main(void)
 		ref_t sym;
 		sym = mkstring(&m, bltnames[i], SYMBOL);
 		vmdefine(&m, sym, mkref(i, BUILTIN));
+	}
+
+	for(i = 1; i < (size_t)argc; i++){
+		FILE *fp;
+		fp = fopen(argv[i], "rb");
+		if(fp == NULL){
+			fprintf(stderr, "cannot open %s\n", argv[i]);
+			return 1;
+		}
+		m.expr = listparse(&m, fp, 0);
+		fclose(fp);
+		if(iserror(&m, m.expr)){
+			fprintf(stderr, "error reading %s\n", argv[i]);
+			return 1;
+		}
+
+		vmcall(&m, RETURN, EVAL);
+		while(vmstep(&m) == 1)
+			;
+
+		m.expr = NIL;
+		m.valu = NIL;
+		fprintf(stderr, "read %s\n", argv[i]);
 	}
 
 	for(;;){
