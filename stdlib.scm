@@ -2,15 +2,12 @@
 (define(seq a b)
 	(if(eq? a b) '()
 		(cons a(seq(+ a 1) b))))
-
 (define(reverse ls)
 	(define(rev ls r)
 		(if(null? ls)
 			r
 			(rev(cdr ls)(cons(car ls) r))))
 	(rev ls '()))
-
-
 (define(sort cmp ls)
 	(define(merge ls1 ls2)
 		(if(null? ls1) ls2
@@ -29,8 +26,16 @@
 	(define(split ls)
 		(if(null? ls) '()
 			(cons(cons(car ls) '())(split(cdr ls)))))
-	(sort2 (split ls)))
+	(sort2(split ls)))
 
 (define(append head tail)
 	(if(null? head) tail
 		(cons(car head)(append(cdr head) tail))))
+(define(fib n)
+	(define(fib2 p1 p2 n)
+		(if(eq? n 0) '()
+			(cons(+ p1 p2)(fib2 p2(+ p1 p2)(- n 1)))))
+	(fib2 1 1 n))
+(define(map fn ls)
+	(if(null? ls) '()
+		(cons(fn(car ls))(map fn(cdr ls)))))
