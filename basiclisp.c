@@ -22,10 +22,12 @@ enum {
 
 	BLT_IF = 0,
 	BLT_BETA,
+	BLT_CONTINUE,
 	BLT_DEFINE,
 	BLT_LAMBDA,
 	BLT_QUOTE,
-	BLT_EXTCALL,
+	BLT_CALLEXT,
+	BLT_CALLCC,
 	BLT_CONS,
 	BLT_CAR,
 	BLT_CDR,
@@ -92,10 +94,12 @@ struct Mach {
 static char *bltnames[] = {
 	"if",
 	"beta",
+	"continue",
 	"define",
 	"lambda",
 	"quote",
-	"extcall",
+	"call-external",
+	"call-with-current-continuation",
 	"cons",
 	"car",
 	"cdr",
@@ -808,7 +812,7 @@ again:
 					vmgoto(m, INS_EVAL);
 					goto again;
 				}
-				if(blt == BLT_BETA){
+				if(blt == BLT_BETA || blt == BLT_CONTINUE){
 					// beta literal: return self.
 					m->valu = m->expr;
 					vmreturn(m);
@@ -1045,7 +1049,16 @@ again:
 					m->reg3 = NIL;
 					vmreturn(m);
 					goto again;
-				} else if(blt == BLT_EXTCALL){
+				} else if(blt == BLT_CALLCC){
+					m->expr = vmload(m, m->expr, 1);
+					m->reg2 = mkcons(m, mkref(BLT_CONTINUE, TAG_BUILTIN), m->stak);
+					m->reg3 = mkcons(m, m->reg2, NIL);
+					vmstore(m, m->expr, 1, m->reg3);
+					m->reg2 = NIL;
+					m->reg3 = NIL;
+					vmgoto(m, INS_EVAL);
+					goto again;
+				} else if(blt == BLT_CALLEXT){
 					vmgoto(m, INS_CONTINUE);
 					return 1;
 				}
@@ -1060,6 +1073,31 @@ again:
 				ref_t *args = &m->reg3;
 
 				beta = vmload(m, m->expr, 0);
+				if(beta == NIL){
+					m->valu = TAG_ERROR;
+					vmreturn(m);
+					goto again;
+				}
+				head = vmload(m, beta, 0);
+				if(reftag(head) != TAG_BUILTIN){
+					m->valu = TAG_ERROR;
+					vmreturn(m);
+					goto again;
+				}
+				if(refval(head) == BLT_CONTINUE){
+					// ((continue . stack) return-value)
+					m->stak = vmload(m, beta, 1);
+					m->valu = vmload(m, m->expr, 1);
+					m->valu = vmload(m, m->valu, 0);
+					vmreturn(m);
+					goto again;
+				}
+				if(refval(head) != BLT_BETA){
+					m->valu = TAG_ERROR;
+					vmreturn(m);
+					goto again;
+				}
+
 				lambda = vmload(m, vmload(m, beta, 1), 0);
 				m->envr = vmload(m, vmload(m, beta, 1), 1);
 
@@ -1128,7 +1166,10 @@ again:
 				goto again;
 			}
 		}
-		fprintf(stderr, "vmstep eval: unrecognized form\n");
+		fprintf(stderr, "vmstep eval: unrecognized form: ");
+		eval_print(m);
+		fprintf(stderr, "\n");
+		abort();
 		m->valu = TAG_ERROR;
 		vmreturn(m);
 		goto again;
@@ -1330,22 +1371,22 @@ main(int argc, char *argv[])
 			fprintf(stderr, "cannot open %s\n", argv[i]);
 			return 1;
 		}
-		m.expr = listparse(&m, fp, 0);
-		fclose(fp);
-		if(iserror(&m, m.expr)){
-			fprintf(stderr, "error reading %s\n", argv[i]);
-			return 1;
+		for(;;){
+			m.expr = listparse(&m, fp, 1);
+			if(iserror(&m, m.expr))
+				break;
+			vmcall(&m, INS_RETURN, INS_EVAL);
+			while(vmstep(&m) == 1)
+				;
+			m.expr = NIL;
+			m.valu = NIL;
 		}
 
-		vmcall(&m, INS_RETURN, INS_EVAL);
-		while(vmstep(&m) == 1)
-			;
-
-		m.expr = NIL;
-		m.valu = NIL;
+		fclose(fp);
 		fprintf(stderr, "read %s\n", argv[i]);
 	}
 
+	//if(argc < 2)
 	for(;;){
 		printf("> "); fflush(stdout);
 		m.expr = listparse(&m, stdin, 1);
@@ -1353,7 +1394,7 @@ main(int argc, char *argv[])
 			break;
 		vmcall(&m, INS_RETURN, INS_EVAL);
 		while(vmstep(&m) == 1){
-			fprintf(stderr, "extcall: ");
+			fprintf(stderr, "call-external: ");
 			eval_print(&m);
 			m.valu = vmload(&m, m.expr, 1);
 			fprintf(stderr, "\n");
