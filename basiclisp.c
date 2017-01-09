@@ -1053,7 +1053,7 @@ again:
 					m->expr = vmload(m, m->expr, 1);
 					m->reg2 = mkcons(m, mkref(BLT_CONTINUE, TAG_BUILTIN), m->stak);
 					m->reg3 = mkcons(m, m->reg2, NIL);
-					vmstore(m, m->expr, 1, m->reg3);
+					m->expr = mkcons(m, vmload(m, m->expr, 0), m->reg3);
 					m->reg2 = NIL;
 					m->reg3 = NIL;
 					vmgoto(m, INS_EVAL);
