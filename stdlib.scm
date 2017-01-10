@@ -39,3 +39,20 @@
 (define(map fn ls)
 	(if(null? ls) '()
 		(cons(fn(car ls))(map fn(cdr ls)))))
+(define Y
+	(lambda(h)
+		((lambda(x)(x x))
+			(lambda(g)(h(lambda args((g g) . args)))))))
+(define yfac
+	(Y
+		(lambda(fn)
+			(lambda(x)
+				(if(< x 2) 1
+					(* x(fn(- x 1))))))))
+(define yfib
+	(Y
+		(lambda(fn)
+			(lambda(x)
+				(if(< x 2)
+					x
+					(+(fn(- x 1))(fn(- x 2))))))))

@@ -53,6 +53,7 @@ enum {
 	INS_IF1,
 	INS_LISTEVAL,
 	INS_LISTEVAL1,
+	INS_LISTEVAL2,
 	INS_HEAD1,
 
 };
@@ -1174,38 +1175,58 @@ again:
 		vmreturn(m);
 		goto again;
 	case INS_LISTEVAL:
-		m->reg2 = mkcons(m, m->expr, NIL);
-		m->reg3 = m->expr;
+		m->reg3 = mkcons(m, NIL, NIL); // initial value-prev
+		m->reg2 = mkcons(m, m->expr, m->reg3);
+		m->stak = mkcons(m, m->reg3, m->stak);
 		m->stak = mkcons(m, m->reg2, m->stak);
+		m->reg3 = m->expr;
 		goto listeval_first;
 	case INS_LISTEVAL1:
+		// top of stack contains (expr-list . value-prev)
+		// where both are lists.
 		m->reg2 = vmload(m, m->stak, 0);
+		// store new m->valu to value-prev.
 		m->reg3 = vmload(m, m->reg2, 1);
-		m->reg3 = mkcons(m, m->valu, m->reg3);
-		vmstore(m, m->reg2, 1, m->reg3);
+		vmstore(m, m->reg3, 0, m->valu);
+		// load remaining expression to reg3.
 		m->reg3 = vmload(m, m->reg2, 0);
 listeval_first:
-		if(m->reg3 != NIL){
+		if(iscons(m, m->reg3)){
 			m->expr = vmload(m, m->reg3, 0);
 			m->reg3 = vmload(m, m->reg3, 1);
 			vmstore(m, m->reg2, 0, m->reg3);
+
+			m->reg4 = mkcons(m, NIL, NIL);
+			m->reg3 = vmload(m, m->reg2, 1);
+			vmstore(m, m->reg3, 1, m->reg4);
+			vmstore(m, m->reg2, 1, m->reg4);
 			m->reg2 = NIL;
 			m->reg3 = NIL;
+			m->reg4 = NIL;
 			vmcall(m, INS_LISTEVAL1, INS_EVAL);
 			goto again;
 		}
-		m->valu = vmload(m, m->reg2, 1);
-
-		// all done, reverse the value list.
-		m->reg3 = NIL;
-		while((m->reg2 = vmload(m, m->valu, 1)) != NIL){
-			vmstore(m, m->valu, 1, m->reg3);
-			m->reg3 = m->valu;
-			m->valu = m->reg2;
+		if(m->reg3 != NIL){
+			m->expr = m->reg3;
+			vmstore(m, m->reg2, 0, NIL);
+			m->reg2 = NIL;
+			m->reg3 = NIL;
+			m->reg4 = NIL;
+			vmcall(m, INS_LISTEVAL2, INS_EVAL);
+			goto again;
+	case INS_LISTEVAL2:
+			m->reg2 = vmload(m, m->stak, 0);
+			// store new m->valu to the rest of value chain.
+			m->reg3 = vmload(m, m->reg2, 1);
+			vmstore(m, m->reg3, 1, m->valu);
 		}
-		vmstore(m, m->valu, 1, m->reg3);
+
 		m->reg2 = NIL;
 		m->reg3 = NIL;
+		m->reg4 = NIL;
+		m->stak = vmload(m, m->stak, 1);
+		m->valu = vmload(m, m->stak, 0);
+		m->valu = vmload(m, m->valu, 1); // skip over 'artificial' head value.
 		m->stak = vmload(m, m->stak, 1);
 		vmreturn(m);
 		goto again;
