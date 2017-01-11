@@ -111,7 +111,7 @@ static char *bltnames[] = {
 	"-",
 	"*",
 	"/",
-	"%",
+	"remainder",
 	"eq?",
 	"null?",
 	"<",

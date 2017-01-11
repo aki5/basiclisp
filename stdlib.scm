@@ -27,7 +27,6 @@
 		(if(null? ls) '()
 			(cons(cons(car ls) '())(split(cdr ls)))))
 	(sort2(split ls)))
-
 (define(append head tail)
 	(if(null? head) tail
 		(cons(car head)(append(cdr head) tail))))
@@ -56,3 +55,25 @@
 				(if(< x 2)
 					x
 					(+(fn(- x 1))(fn(- x 2))))))))
+(define(primegen)
+	(define next 2)
+	(define primelist '())
+	(define (prime? n lst)
+		(if(null? lst) #t
+			(if(eq? (remainder n (car lst)) 0) #f
+				(prime? n (cdr lst)))))
+	(define generator (lambda()
+		(if(prime? next primelist)
+			((lambda(rval)
+				(set! primelist (cons next primelist))
+				(set! next (+ rval 1))
+				rval) next)
+			((lambda(rval)
+				(set! next (+ rval 1))
+				(generator)) next))))
+	generator)
+(define (getn gen n)
+	(if(eq? n 0) '()
+		(cons (gen) (getn gen (- n 1)))))
+(define(primes n)
+	(getn (primegen) n))
