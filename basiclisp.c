@@ -28,6 +28,7 @@ enum {
 	BLT_QUOTE,
 	BLT_CALLEXT,
 	BLT_CALLCC,
+	BLT_SET,
 	BLT_CONS,
 	BLT_CAR,
 	BLT_CDR,
@@ -48,6 +49,7 @@ enum {
 	INS_BETA1,
 	INS_CONTINUE,
 	INS_DEFINE1,
+	INS_SET1,
 	INS_RETURN,
 	INS_EVAL,
 	INS_IF1,
@@ -101,6 +103,7 @@ static char *bltnames[] = {
 	"quote",
 	"call-external",
 	"call-with-current-continuation",
+	"set!",
 	"cons",
 	"car",
 	"cdr",
@@ -731,7 +734,6 @@ vmdefine(Mach *m, ref_t sym, ref_t val)
 	vmstore(m, m->envr, 1, *env);
 }
 
-
 int
 vmstep(Mach *m)
 {
@@ -819,7 +821,7 @@ again:
 					vmreturn(m);
 					goto again;
 				}
-				if(blt == BLT_DEFINE){
+				if(blt == BLT_DEFINE || blt == BLT_SET){
 					// (define sym val) -> args,
 					// current environment gets sym associated with val.
 					ref_t *sym = &m->reg2;
@@ -841,7 +843,7 @@ again:
 					*sym = NIL;
 					*val = NIL;
 
-					vmcall(m, INS_DEFINE1, INS_EVAL);
+					vmcall(m, blt == BLT_SET ? INS_SET1 : INS_DEFINE1, INS_EVAL);
 					goto again;
 	case INS_DEFINE1:
 					sym = &m->reg2;
@@ -850,17 +852,40 @@ again:
 					*sym = vmload(m, m->stak, 0);
 					m->stak = vmload(m, m->stak, 1);
 					*sym = mkcons(m, *sym, m->valu);
-
 					// push new (sym . val) just below current env head.
 					*env = vmload(m, m->envr, 1);
 					*env = mkcons(m, *sym, *env);
 					vmstore(m, m->envr, 1, *env);
 					*env = NIL;
 					*sym = NIL;
-
 					m->valu = NIL;
 					vmreturn(m);
-
+					goto again;
+	case INS_SET1:
+					sym = &m->reg2;
+					env = &m->reg3;
+					// restore sym from stak, construct (sym . val)
+					*sym = vmload(m, m->stak, 0);
+					m->stak = vmload(m, m->stak, 1);
+					ref_t lst = m->envr;
+					ref_t pair;
+					while(lst != NIL){
+						pair = vmload(m, lst, 0);
+						if(iscons(m, pair)){
+							ref_t key = vmload(m, pair, 0);
+							if(key == *sym)
+								break;
+						}
+						lst = vmload(m, lst, 1);
+					}
+					if(lst != NIL)
+						vmstore(m, pair, 1, m->valu);
+					else
+						fprintf(stderr, "set!: undefined symbol %s\n", (char *)pointer(m, *sym)); 
+					*env = NIL;
+					*sym = NIL;
+					m->valu = NIL;
+					vmreturn(m);
 					goto again;
 				}
 				if(blt == BLT_LAMBDA){
@@ -1206,6 +1231,11 @@ listeval_first:
 			vmcall(m, INS_LISTEVAL1, INS_EVAL);
 			goto again;
 		}
+		// this following bit is non-standard, it allows one to call a function
+		// with the notation (fn . args) or (fn arg1 arg2 . rest), effectively
+		// splicing a list 'args' in to the argument list, analogous to how
+		// varargs are declared in standard scheme functions. by allowing the
+		// dotted notation for apply, there is no need an apply built-in.
 		if(m->reg3 != NIL){
 			m->expr = m->reg3;
 			vmstore(m, m->reg2, 0, NIL);
