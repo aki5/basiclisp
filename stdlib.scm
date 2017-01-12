@@ -1,4 +1,42 @@
-
+(define(apply fn args) (fn . args))
+(define(list . args) args)
+(define(not x) (if x #f #t))
+(define(null? x) (eq? x '()))
+(define(begin . args) (if(null? args) '() (if(null? (cdr args)) (car args) (apply begin (cdr args)))))
+(define(and . args)
+	(if(null? args) #t
+		(if(not(car args)) #f
+			(apply and (cdr args)))))
+(define(or . args)
+	(if(null? args) #f
+		(if(car args) #t
+			(apply or (cdr args)))))
+(define(list? lst)
+	(if(pair? lst)
+		(if(null? lst) #t (list? (cdr lst)))
+		(null? lst)))
+(define(append head tail)
+	(if(null? head) tail
+		(cons(car head)(append(cdr head) tail))))
+(define(print . args)
+	(define(print-sp needsp)
+		(if needsp (print1 " ") '()))
+	(define(print-pair obj needsp)
+		(define head (car obj))
+		(if(pair? head)
+			(list (print1 "(") (print-obj head #f) (print1 ")"))
+			(list (print-sp needsp) (print1 head)))
+		(print-obj (cdr obj) #t))
+	(define(print-obj obj needsp)
+		(if(pair? obj)
+			(print-pair obj needsp)
+			(if(null? obj) '()
+				(list (print1 " . ") (print1 obj)))))
+	(print-obj args #f)
+	args)
+(define(map fn ls)
+	(if(null? ls) '()
+		(cons(fn(car ls))(map fn(cdr ls)))))
 (define(seq a b)
 	(if(eq? a b) '()
 		(cons a(seq(+ a 1) b))))
@@ -27,17 +65,11 @@
 		(if(null? ls) '()
 			(cons(cons(car ls) '())(split(cdr ls)))))
 	(sort2(split ls)))
-(define(append head tail)
-	(if(null? head) tail
-		(cons(car head)(append(cdr head) tail))))
 (define(fib n)
 	(define(fib2 p1 p2 n)
 		(if(eq? n 0) '()
 			(cons(+ p1 p2)(fib2 p2(+ p1 p2)(- n 1)))))
 	(fib2 1 1 n))
-(define(map fn ls)
-	(if(null? ls) '()
-		(cons(fn(car ls))(map fn(cdr ls)))))
 (define Y
 	(lambda(h)
 		((lambda(x)(x x))
@@ -72,8 +104,35 @@
 				(set! next (+ rval 1))
 				(generator)) next))))
 	generator)
-(define (getn gen n)
+(define(getn gen n)
 	(if(eq? n 0) '()
 		(cons (gen) (getn gen (- n 1)))))
 (define(primes n)
 	(getn (primegen) n))
+(define(factor n)
+	(define(fact1 n k)
+		(if(eq? n 1) '()
+			(if(eq? (remainder n k) 0)
+				(cons k (fact1 (/ n k) k))
+				(fact1 n (+ k 1)))))
+	(fact1 n 2))
+(define(flip sign) (if(eq? sign '+) '- '+))
+(define(det2x2 sign fact
+	a0 a1
+	b0 b1)
+	(list (list sign (list '* a0 b1 . fact)) (list (flip sign) (list '* b0 a1 . fact))))
+(define(det3x3 sign fact
+	a0 a1 a2
+	b0 b1 b2
+	c0 c1 c2)
+	(append (det2x2 sign (cons a0 fact) b1 b2 c1 c2)
+	(append	(det2x2 (flip sign) (cons a1 fact) b0 b2 c0 c2)
+		(det2x2 sign (cons a2 fact) b0 b1 c0 c1))))
+(define(make-object val)
+	(lambda(method)
+		(if(eq? method 'val) val
+			'())))
+(define(make-vector len)
+	(if(< len 2) 0
+		(cons (make-vector (/ len 2)) (make-vector (/ len 2)))))
+

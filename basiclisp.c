@@ -32,16 +32,20 @@ enum {
 	BLT_CONS,
 	BLT_CAR,
 	BLT_CDR,
+	// arithmetic
 	BLT_ADD,
 	BLT_SUB,
 	BLT_MUL,
 	BLT_DIV,
 	BLT_REM,
-	BLT_EQ,
-	BLT_NULL,
-	BLT_LESS,
+	// predicates
+	BLT_ISPAIR,
+	BLT_ISEQ,
+	BLT_ISLESS,
 	BLT_TRUE,
 	BLT_FALSE,
+	// io
+	BLT_PRINT1,
 	NUM_BLT,
 
 	// states for vmstep()
@@ -95,28 +99,29 @@ struct Mach {
 };
 
 static char *bltnames[] = {
-	"if",
-	"beta",
-	"continue",
-	"define",
-	"lambda",
-	"quote",
-	"call-external",
-	"call-with-current-continuation",
-	"set!",
-	"cons",
-	"car",
-	"cdr",
-	"+",
-	"-",
-	"*",
-	"/",
-	"remainder",
-	"eq?",
-	"null?",
-	"<",
-	"#t",
-	"#f",
+[BLT_IF] = "if",
+[BLT_BETA] = "beta",
+[BLT_CONTINUE] = "continue",
+[BLT_DEFINE] = "define",
+[BLT_LAMBDA] = "lambda",
+[BLT_QUOTE] = "quote",
+[BLT_CALLEXT] = "call-external",
+[BLT_CALLCC] = "call-with-current-continuation",
+[BLT_SET] = "set!",
+[BLT_CONS] = "cons",
+[BLT_CAR] = "car",
+[BLT_CDR] = "cdr",
+[BLT_ADD] = "+",
+[BLT_SUB] = "-",
+[BLT_MUL] = "*",
+[BLT_DIV] = "/",
+[BLT_REM] = "remainder",
+[BLT_ISPAIR] = "pair?",
+[BLT_ISEQ] = "eq?",
+[BLT_ISLESS] = "<",
+[BLT_TRUE] = "#t",
+[BLT_FALSE] = "#f",
+[BLT_PRINT1] = "print1",
 };
 
 static ref_t
@@ -183,7 +188,7 @@ issymbol(Mach *m, ref_t a)
 }
 
 static int
-iscons(Mach *m, ref_t a)
+ispair(Mach *m, ref_t a)
 {
 	return reftag(a) == TAG_CONS && a != NIL;
 }
@@ -347,12 +352,14 @@ static ref_t
 allocate(Mach *m, size_t num, int tag)
 {
 	ref_t ref;
-
+	int didgc = 0;
 	// first, try gc.
-	if(!m->gclock && (m->memcap - m->memlen) < num)
+	if(!m->gclock && (m->memcap - m->memlen) < num){
 		vmgc(m);
+		didgc = 1;
+	}
 recheck:
-	if((m->memcap - m->memlen) < num){
+	if((didgc && 4*m->memlen >= 3*m->memcap) || (m->memcap - m->memlen) < num){
 		m->memcap = (m->memcap == 0) ? 256 : 2*m->memcap;
 		m->mem = realloc(m->mem, m->memcap * sizeof m->mem[0]);
 		memset(m->mem + m->memlen, 0, m->memcap - m->memlen);
@@ -621,7 +628,7 @@ atomprint(Mach *m, ref_t aref, FILE *fp)
 		break;
 	case TAG_CONS:
 		if(aref == NIL)
-			fprintf(fp, "nil");
+			fprintf(fp, "()");
 		else
 			fprintf(fp, "cons(#x%x)", aref);
 		break;
@@ -635,69 +642,13 @@ atomprint(Mach *m, ref_t aref, FILE *fp)
 		fprintf(fp, "%f", *(double *)pointer(m, aref));
 		break;
 	case TAG_STRING:
-		fprintf(fp, "\"%s\"", (char *)pointer(m, aref));
+		fprintf(fp, "%s", (char *)pointer(m, aref));
 		break;
 	case TAG_SYMBOL:
 		fprintf(fp, "%s", (char *)pointer(m, aref));
 		break;
 	}
 	return tag;
-}
-
-// (print ...)
-static void
-eval_print(Mach *m)
-{
-	FILE *fp = stderr;
-	int first = 1;
-	ref_t *stak = &m->reg2;
-	ref_t *list = &m->reg3;
-	ref_t *valu = &m->reg4;
-
-m->gclock++;
-	// skip over the 'print symbol in head position.
-	// *valu = vmload(m, m->expr, 1);
-	*valu = m->expr;
-	*stak = NIL;
-	*list = NIL;
-	for(;;){
-		if(iscons(m, *valu)){
-			fprintf(fp, "(");
-			*stak = mkcons(m, *list, *stak);
-			*list = *valu;
-			*valu = vmload(m, *list, 0);
-			first = 1;
-		} else {
-			if(!first)
-				fprintf(fp, " ");
-			atomprint(m, *valu, fp);
-			first = 0;
-unwind:
-			while(*list == NIL){
-				if(*stak == NIL)
-					goto done;
-				fprintf(fp, ")");
-				*list = vmload(m, *stak, 0);
-				*stak = vmload(m, *stak, 1);
-			}
-			*list = vmload(m, *list, 1);
-			if(*list == NIL)
-				goto unwind;
-			if(!iscons(m, *list)){
-				fprintf(fp, " .");
-				*valu = *list;
-				*list = NIL;
-			} else {
-				*valu = vmload(m, *list, 0);
-			}
-		}
-	}
-done:
-	*stak = NIL;
-	*list = NIL;
-	*valu = NIL;
-m->gclock--;
-
 }
 
 static void
@@ -721,6 +672,7 @@ vmreturn(Mach *m)
 	m->stak = vmload(m, m->stak, 1);
 	m->envr = vmload(m, m->stak, 0);
 	m->stak = vmload(m, m->stak, 1);
+	m->expr = NIL;
 }
 
 static void
@@ -760,7 +712,7 @@ again:
 			ref_t lst = m->envr;
 			while(lst != NIL){
 				ref_t pair = vmload(m, lst, 0);
-				if(iscons(m, pair)){
+				if(ispair(m, pair)){
 					ref_t key = vmload(m, pair, 0);
 					if(key == m->expr){
 						m->valu = vmload(m, pair, 1);
@@ -775,7 +727,7 @@ again:
 			}
 			vmreturn(m);
 			goto again;
-		} else if(iscons(m, m->expr)){
+		} else if(ispair(m, m->expr)){
 			// form is (something), so at least we are applying something.
 			// handle special forms (quote, lambda, beta, if, define) before
 			// evaluating args.
@@ -830,7 +782,7 @@ again:
 					*sym = vmload(m, m->expr, 1);
 					*val = vmload(m, *sym, 1);
 					*sym = vmload(m, *sym, 0);
-					if(iscons(m, *sym)){
+					if(ispair(m, *sym)){
 						// scheme shorthand: (define (name args...) body1 body2...).
 						*tmp = mkcons(m, vmload(m, *sym, 1), *val);
 						*val = mkcons(m, mkref(BLT_LAMBDA, TAG_BUILTIN), *tmp);
@@ -858,7 +810,6 @@ again:
 					vmstore(m, m->envr, 1, *env);
 					*env = NIL;
 					*sym = NIL;
-					m->valu = NIL;
 					vmreturn(m);
 					goto again;
 	case INS_SET1:
@@ -871,7 +822,7 @@ again:
 					ref_t pair;
 					while(lst != NIL){
 						pair = vmload(m, lst, 0);
-						if(iscons(m, pair)){
+						if(ispair(m, pair)){
 							ref_t key = vmload(m, pair, 0);
 							if(key == *sym)
 								break;
@@ -970,21 +921,16 @@ again:
 					}
 					vmreturn(m);
 					goto again;
-				} else if(blt == BLT_NULL){ // (null? ...)
-					ref_t ref0;
+				} else if(blt == BLT_ISPAIR){ // (pair? ...)
 					m->expr = vmload(m, m->expr, 1);
-					ref0 = vmload(m, m->expr, 0);
-					if(reftag(ref0) == TAG_CONS){
-						if(ref0 == NIL)
-							m->valu = mkref(BLT_TRUE, TAG_BUILTIN);
-						else
-							m->valu = mkref(BLT_FALSE, TAG_BUILTIN);
-					} else {
-						m->valu = mkref(BLT_FALSE, TAG_BUILTIN);
-					}
+					m->expr = vmload(m, m->expr, 0);
+					if(ispair(m, m->expr))
+						m->valu =  mkref(BLT_TRUE, TAG_BUILTIN);
+					else
+						m->valu =  mkref(BLT_FALSE, TAG_BUILTIN);
 					vmreturn(m);
 					goto again;
-				} else if(blt == BLT_EQ){ // (eq? ...)
+				} else if(blt == BLT_ISEQ){ // (eq? ...)
 					ref_t ref0;
 					m->expr = vmload(m, m->expr, 1);
 					ref0 = vmload(m, m->expr, 0);
@@ -1022,7 +968,7 @@ again:
 				eqdone:
 					vmreturn(m);
 					goto again;
-				} else if(blt == BLT_LESS){
+				} else if(blt == BLT_ISLESS){
 					ref_t ref0, ref1;
 					m->expr = vmload(m, m->expr, 1);
 					ref0 = vmload(m, m->expr, 0);
@@ -1087,8 +1033,15 @@ again:
 				} else if(blt == BLT_CALLEXT){
 					vmgoto(m, INS_CONTINUE);
 					return 1;
+				} else if(blt == BLT_PRINT1){
+					m->expr = vmload(m, m->expr, 1);
+					m->expr = vmload(m, m->expr, 0);
+					atomprint(m, m->expr, stdout);
+					m->valu = m->expr;
+					vmreturn(m);
+					goto again;
 				}
-			} else if(iscons(m, head)){
+			} else if(ispair(m, head)){
 
 				// form is ((beta (lambda...)) args)
 				// ((beta (lambda args . body) . envr) args) -> (body),
@@ -1129,11 +1082,11 @@ again:
 
 				*argnames = vmload(m, lambda, 1);
 				*args = vmload(m, m->expr, 1); // args = cdr expr
-				if(iscons(m, *argnames)){
+				if(ispair(m, *argnames)){
 					// loop over argnames and args simultaneously, cons
 					// them as pairs to the environment
 					*argnames = vmload(m, *argnames, 0);
-					while(iscons(m, *argnames) && iscons(m, *args)){
+					while(ispair(m, *argnames) && ispair(m, *args)){
 						ref_t *pair = &m->reg4;
 						*pair = mkcons(m,
 							vmload(m, *argnames, 0),
@@ -1186,14 +1139,14 @@ again:
 				goto again;
 			} else {
 				fprintf(stderr, "apply: head is weird: ");
-				eval_print(m);
+				//eval_print(m);
 				fprintf(stderr, "\n");
 				vmreturn(m);
 				goto again;
 			}
 		}
 		fprintf(stderr, "vmstep eval: unrecognized form: ");
-		eval_print(m);
+		//eval_print(m);
 		fprintf(stderr, "\n");
 		abort();
 		m->valu = TAG_ERROR;
@@ -1216,7 +1169,7 @@ again:
 		// load remaining expression to reg3.
 		m->reg3 = vmload(m, m->reg2, 0);
 listeval_first:
-		if(iscons(m, m->reg3)){
+		if(ispair(m, m->reg3)){
 			m->expr = vmload(m, m->reg3, 0);
 			m->reg3 = vmload(m, m->reg3, 1);
 			vmstore(m, m->reg2, 0, m->reg3);
@@ -1236,6 +1189,8 @@ listeval_first:
 		// splicing a list 'args' in to the argument list, analogous to how
 		// varargs are declared in standard scheme functions. by allowing the
 		// dotted notation for apply, there is no need an apply built-in.
+		// unfortunately, of course the dotted tail must not be a literal list,
+		// so defining apply as a function is still going to be necessary.
 		if(m->reg3 != NIL){
 			m->expr = m->reg3;
 			vmstore(m, m->reg2, 0, NIL);
@@ -1446,12 +1401,12 @@ main(int argc, char *argv[])
 		vmcall(&m, INS_RETURN, INS_EVAL);
 		while(vmstep(&m) == 1){
 			fprintf(stderr, "call-external: ");
-			eval_print(&m);
+			//eval_print(&m);
 			m.valu = vmload(&m, m.expr, 1);
 			fprintf(stderr, "\n");
 		}
-		m.expr = m.valu;
-		eval_print(&m);
+		//m.expr = m.valu;
+		//eval_print(&m);
 		printf("\n");
 		if(iserror(&m, m.valu))
 			break;
