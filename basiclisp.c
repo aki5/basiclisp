@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <math.h>
 
+typedef unsigned int ref_t;
 #define NIL (ref_t)0
 #define nelem(x) (sizeof(x)/sizeof(x[0]))
 #define MKREF(val, tag) (((val)<<3)|((tag)&7))
@@ -29,6 +30,8 @@ enum {
 	BLT_CALLEXT,
 	BLT_CALLCC,
 	BLT_SET,
+	BLT_SETCAR,
+	BLT_SETCDR,
 	BLT_CONS,
 	BLT_CAR,
 	BLT_CDR,
@@ -37,6 +40,9 @@ enum {
 	BLT_SUB,
 	BLT_MUL,
 	BLT_DIV,
+	BLT_BITOR,
+	BLT_BITAND,
+	BLT_BITXOR,
 	BLT_REM,
 	// predicates
 	BLT_ISPAIR,
@@ -63,8 +69,6 @@ enum {
 	INS_HEAD1,
 
 };
-
-typedef unsigned int ref_t;
 
 typedef struct Mach Mach;
 struct Mach {
@@ -108,6 +112,8 @@ static char *bltnames[] = {
 [BLT_CALLEXT] = "call-external",
 [BLT_CALLCC] = "call-with-current-continuation",
 [BLT_SET] = "set!",
+[BLT_SETCAR] = "set-car!",
+[BLT_SETCDR] = "set-cdr!",
 [BLT_CONS] = "cons",
 [BLT_CAR] = "car",
 [BLT_CDR] = "cdr",
@@ -115,6 +121,9 @@ static char *bltnames[] = {
 [BLT_SUB] = "-",
 [BLT_MUL] = "*",
 [BLT_DIV] = "/",
+[BLT_BITOR] = "bitwise-or",
+[BLT_BITAND] = "bitwise-and",
+[BLT_BITXOR] = "bitwise-xor",
 [BLT_REM] = "remainder",
 [BLT_ISPAIR] = "pair?",
 [BLT_ISEQ] = "eq?",
@@ -865,14 +874,16 @@ again:
 			if(reftag(head) == TAG_BUILTIN){
 				ref_t blt = refval(head);
 				if(blt >= BLT_ADD && blt <= BLT_REM){
-					ref_t ref0, ref;
+					ref_t ref0, ref, tag0, tag;
 					long long ires;
 					double fres;
 					m->expr = vmload(m, m->expr, 1);
 					ref0 = vmload(m, m->expr, 0);
-					if(reftag(ref0) == TAG_INTEGER || reftag(ref0) == TAG_BIGINT){
+					tag0 = reftag(ref0);
+					if(tag0 == TAG_INTEGER || tag0 == TAG_BIGINT){
 						ires = loadint(m, ref0);
-					} else if(reftag(ref0) == TAG_FLOAT){
+						tag0 = TAG_INTEGER;
+					} else if(tag0 == TAG_FLOAT){
 						fres = loadfloat(m, ref0);
 					} else {
 						m->valu = TAG_ERROR;
@@ -882,7 +893,10 @@ again:
 					m->expr = vmload(m, m->expr, 1);
 					while(m->expr != NIL){
 						ref = vmload(m, m->expr, 0);
-						if(reftag(ref0) != reftag(ref)){
+						tag = reftag(ref);
+						if(tag == TAG_BIGINT)
+							tag = TAG_INTEGER;
+						if(tag0 != tag){
 							m->valu = TAG_ERROR;
 							vmreturn(m);
 							goto again;
@@ -899,6 +913,8 @@ again:
 								fres /= tmp;
 							else if(blt == BLT_REM)
 								fres = fmod(fres, tmp);
+							else
+								fprintf(stderr, "invalid op %d for float\n", blt);
 						} else {
 							long long tmp = loadint(m, ref);
 							if(blt == BLT_ADD)
@@ -909,6 +925,12 @@ again:
 								ires *= tmp;
 							else if(blt == BLT_DIV)
 								ires /= tmp;
+							else if(blt == BLT_BITOR)
+								ires |= tmp;
+							else if(blt == BLT_BITAND)
+								ires &= tmp;
+							else if(blt == BLT_BITXOR)
+								ires ^= tmp;
 							else if(blt == BLT_REM)
 								ires %= tmp;
 						}
@@ -995,6 +1017,16 @@ again:
 					} else if(reftag(ref0) < reftag(ref1)){
 						m->valu = mkref(BLT_TRUE, TAG_BUILTIN);
 					}
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_SETCAR || blt == BLT_SETCDR){
+					m->reg2 = vmload(m, m->expr, 1); // cons ref
+					m->reg3 = vmload(m, m->reg2, 1); // val ref
+					m->reg2 = vmload(m, m->reg2, 0); // cons
+					m->reg3 = vmload(m, m->reg3, 0); // val
+					vmstore(m, m->reg2, blt == BLT_SETCAR ? 0 : 1, m->reg3);
+					m->reg2 = NIL;
+					m->reg3 = NIL;
 					vmreturn(m);
 					goto again;
 				} else if(blt == BLT_CAR){
