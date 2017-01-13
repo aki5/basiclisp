@@ -150,7 +150,6 @@
 		(set! s0 (car last))
 		(set! s1 (car first))
 		(set! s1 (bitwise-xor s1 (* s1 2147483648)))
-		(print "s0:" s0 " s1:" s1 "\n")
 		(set! xorval (bitwise-xor s1 s0 (/ s1 2048) (/ s0 1073741824)))
 		(set-car! first xorval)
 		(* xorval 1181783497276652981)))
