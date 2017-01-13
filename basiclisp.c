@@ -234,12 +234,23 @@ isbreak(int c)
 }
 
 static int
+ishexchar(int c)
+{
+	switch(c){
+	case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
+		return 1;
+	}
+	return 0;
+}
+
+static int
 isnumchar(int c)
 {
 	switch(c){
 	case '0': case '1': case '2': case '3': case '4':
 	case '5': case '6': case '7': case '8': case '9':
 	case '.': case '-': case '+':
+	case 'p': case 'e': case 'x':
 		return 1;
 	}
 	return 0;
@@ -265,7 +276,7 @@ tokclear(Mach *m)
 static int
 lex(Mach *m, FILE *fp)
 {
-	int isinteger;
+	int isinteger, ishex;
 	int ch, peekc;
 
 again:
@@ -278,6 +289,7 @@ again:
 		goto again;
 	}
 	isinteger = 1;
+	ishex = 0;
 	switch(ch){
 	// skip over comments
 	case ';':
@@ -309,12 +321,14 @@ again:
 	case '0': case '1': case '2': case '3': case '4':
 	case '5': case '6': case '7': case '8': case '9':
 		while(ch != -1){
-			if(!isnumchar(ch)){
+			if(!isnumchar(ch) && !(ishex && ishexchar(ch))){
 				if(isbreak(ch))
 					break;
 				goto casesym;
 			}
-			if(ch == '.')
+			if(ch == 'x')
+				ishex = 1;
+			if(ch == '.' || ch == 'e' || ch == 'p')
 				isinteger = 0;
 			tokappend(m, ch);
 			ch = fgetc(fp);
@@ -347,7 +361,8 @@ again:
 					do {
 						code *= 8;
 						code += ch - '0';
-					} while(isdigit((ch = fgetc(fp))) && ch != -1);
+						ch = fgetc(fp);
+					} while(ch >= '0' && ch <= '7');
 					if(ch != -1) ungetc(ch, fp);
 					ch = code;
 					break;
@@ -902,6 +917,7 @@ again:
 					ref_t ref0, ref, tag0, tag;
 					long long ires;
 					double fres;
+					int nterms;
 					m->expr = vmload(m, m->expr, 1);
 					ref0 = vmload(m, m->expr, 0);
 					tag0 = reftag(ref0);
@@ -916,7 +932,9 @@ again:
 						goto again;
 					}
 					m->expr = vmload(m, m->expr, 1);
+					nterms = 0;
 					while(m->expr != NIL){
+						nterms++;
 						ref = vmload(m, m->expr, 0);
 						tag = reftag(ref);
 						if(tag == TAG_BIGINT)
@@ -964,8 +982,12 @@ again:
 						m->expr = vmload(m, m->expr, 1);
 					}
 					if(reftag(ref0) == TAG_FLOAT){
+						if(blt == BLT_SUB && nterms == 0)
+							fres = -fres;
 						m->valu = mkfloat(m, fres);
 					} else {
+						if(blt == BLT_SUB && nterms == 0)
+							ires = -ires;
 						m->valu = mkint(m, ires);
 					}
 					vmreturn(m);
