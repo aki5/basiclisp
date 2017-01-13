@@ -40,9 +40,10 @@ enum {
 	BLT_SUB,
 	BLT_MUL,
 	BLT_DIV,
-	BLT_BITOR,
+	BLT_BITIOR,
 	BLT_BITAND,
 	BLT_BITXOR,
+	BLT_BITNOT,
 	BLT_REM,
 	// predicates
 	BLT_ISPAIR,
@@ -121,9 +122,10 @@ static char *bltnames[] = {
 [BLT_SUB] = "-",
 [BLT_MUL] = "*",
 [BLT_DIV] = "/",
-[BLT_BITOR] = "bitwise-or",
+[BLT_BITIOR] = "bitwise-ior",
 [BLT_BITAND] = "bitwise-and",
 [BLT_BITXOR] = "bitwise-xor",
+[BLT_BITNOT] = "bitwise-not",
 [BLT_REM] = "remainder",
 [BLT_ISPAIR] = "pair?",
 [BLT_ISEQ] = "eq?",
@@ -925,12 +927,14 @@ again:
 								ires *= tmp;
 							else if(blt == BLT_DIV)
 								ires /= tmp;
-							else if(blt == BLT_BITOR)
+							else if(blt == BLT_BITIOR)
 								ires |= tmp;
 							else if(blt == BLT_BITAND)
 								ires &= tmp;
 							else if(blt == BLT_BITXOR)
 								ires ^= tmp;
+							else if(blt == BLT_BITNOT)
+								ires = ~tmp;
 							else if(blt == BLT_REM)
 								ires %= tmp;
 						}

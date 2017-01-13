@@ -135,7 +135,6 @@
 (define(make-vector len)
 	(if(< len 2) 0
 		(cons (make-vector (/ len 2)) (make-vector (/ len 2)))))
-
 (define(make-prng first)
 	(define(findlst lst)
 		(if(null? (cdr lst)) lst
@@ -143,23 +142,17 @@
 	(define last (findlst first))
 	(define s0 0)
 	(define s1 0)
-	(define xorval 0); // b, c
+	(define xorval 0)
 	(lambda()
 		(set-cdr! last first)
 		(set! last first)
 		(set! first (cdr first))
 		(set! s0 (car last))
-		(set! s1 (* (car first) 2147483648))
-		(set! xorval (bitwise-xor s1 s0 (/ s1 2048) (/ s0 1073741824))); // b, c
+		(set! s1 (car first))
+		(set! s1 (bitwise-xor s1 (* s1 2147483648)))
+		(print "s0:" s0 " s1:" s1 "\n")
+		(set! xorval (bitwise-xor s1 s0 (/ s1 2048) (/ s0 1073741824)))
 		(set-car! first xorval)
 		(* xorval 1181783497276652981)))
-
 (define random (make-prng '(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)))
-
-;uint64_t xorshift1024star(void) {
-;   const uint64_t s0 = s[p];
-;   uint64_t s1 = s[p = (p + 1) & 15];
-;   s1 ^= s1 << 31; // a
-;   s[p] = s1 ^ s0 ^ (s1 >> 11) ^ (s0 >> 30); // b, c
-;   return s[p] * UINT64_C(1181783497276652981);
-;}
+(define (pow x y) (if(eq? y 0) 1 (* x (pow x (- y 1)))))
