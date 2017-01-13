@@ -323,19 +323,42 @@ again:
 			ungetc(ch, fp);
 		return isinteger ? TAG_INTEGER : TAG_FLOAT;
 
-	// string constant, detect and skip escapes but don't interpret them
+	// string constant, detect and interpret standard escapes like in c.
 	case '"':
 		ch = fgetc(fp);
 		if(ch == '\n')
 			m->lineno++;
 		while(ch != -1 && ch != '"'){
 			if(ch == '\\'){
-				tokappend(m, ch);
+				int code;
 				ch = fgetc(fp);
-				if(ch == '\n')
-					m->lineno++;
 				if(ch == -1)
 					continue;
+				switch(ch){
+				default:
+					break;
+				case '\n':
+					m->lineno++;
+					break;
+				// expand octal code (ie. \012) to byte value.
+				case '0': case '1': case '2': case '3':
+				case '4': case '5': case '6': case '7':
+					code = 0;
+					do {
+						code *= 8;
+						code += ch - '0';
+					} while(isdigit((ch = fgetc(fp))) && ch != -1);
+					if(ch != -1) ungetc(ch, fp);
+					ch = code;
+					break;
+				case 'a': ch = '\a'; break;
+				case 'b': ch = '\b'; break;
+				case 'n': ch = '\n'; break;
+				case 't': ch = '\t'; break;
+				case 'r': ch = '\r'; break;
+				case 'v': ch = '\v'; break;
+				case 'f': ch = '\f'; break;
+				}
 			}
 			tokappend(m, ch);
 			ch = fgetc(fp);
@@ -1344,8 +1367,6 @@ vmgc(Mach *m)
 
 	memcpy(&oldm, m, sizeof oldm);
 
-//fprintf(stderr, "gc start: %zd\n", m->memlen);
-
 	isatom = allocbit(m->memlen);
 	isforw = allocbit(m->memlen);
 	m->mem = malloc(m->memcap * sizeof m->mem[0]);
@@ -1386,7 +1407,6 @@ vmgc(Mach *m)
 	free(isforw);
 
 	m->gclock--;
-//fprintf(stderr, "gc end: %zd\n", m->memlen);
 }
 
 int
@@ -1428,7 +1448,6 @@ main(int argc, char *argv[])
 		fprintf(stderr, "read %s\n", argv[i]);
 	}
 
-	//if(argc < 2)
 	for(;;){
 		printf("> "); fflush(stdout);
 		m.expr = listparse(&m, stdin, 1);
@@ -1437,13 +1456,9 @@ main(int argc, char *argv[])
 		vmcall(&m, INS_RETURN, INS_EVAL);
 		while(vmstep(&m) == 1){
 			fprintf(stderr, "call-external: ");
-			//eval_print(&m);
 			m.valu = vmload(&m, m.expr, 1);
 			fprintf(stderr, "\n");
 		}
-		//m.expr = m.valu;
-		//eval_print(&m);
-		printf("\n");
 		if(iserror(&m, m.valu))
 			break;
 		m.valu = NIL;
