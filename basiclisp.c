@@ -35,6 +35,7 @@ enum {
 	BLT_CONS,
 	BLT_CAR,
 	BLT_CDR,
+	BLT_LOCALENV,
 	// arithmetic
 	BLT_ADD,
 	BLT_SUB,
@@ -118,6 +119,7 @@ static char *bltnames[] = {
 [BLT_CONS] = "cons",
 [BLT_CAR] = "car",
 [BLT_CDR] = "cdr",
+[BLT_LOCALENV] = "local-env",
 [BLT_ADD] = "+",
 [BLT_SUB] = "-",
 [BLT_MUL] = "*",
@@ -1121,7 +1123,12 @@ again:
 					m->valu = m->expr;
 					vmreturn(m);
 					goto again;
+				} else if(blt == BLT_LOCALENV){
+					m->valu = m->envr;
+					vmreturn(m);
+					goto again;
 				}
+
 			} else if(ispair(m, head)){
 
 				// form is ((beta (lambda...)) args)
@@ -1148,7 +1155,8 @@ again:
 					// ((continue . stack) return-value)
 					m->stak = vmload(m, beta, 1);
 					m->valu = vmload(m, m->expr, 1);
-					m->valu = vmload(m, m->valu, 0);
+					if(ispair(m, m->valu))
+						m->valu = vmload(m, m->valu, 0);
 					vmreturn(m);
 					goto again;
 				}
