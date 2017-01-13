@@ -154,4 +154,25 @@
 		(set-car! first xorval)
 		(* xorval 1181783497276652981)))
 (define random (make-prng '(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)))
-(define (pow x y) (if(eq? y 0) 1 (* x (pow x (- y 1)))))
+(define(iabs x) (if(< x 0) (- x) x))
+(define (frandom)
+	(define(conv i f)
+		(if(< i 2) f (conv (/ i 2) (if(eq? (remainder i 2) 0) (/ f 2.0) (+ (/ f 2.0) 0.5)))))
+	(conv (iabs (random)) 0.0))
+(define(pow x y) (if(eq? y 0) 1 (* x (pow x (- y 1)))))
+(define(fact x)(if(eq? x 1) 1 (* x (fact (- x 1)))))
+(define(bitwise-popcnt res)
+	(define(popcnt-step masks div res)
+		(if(null? masks) res
+			(popcnt-step (cdr masks) (* div div)
+				(+ (bitwise-and (car masks) res) (bitwise-and (car masks) (/ res div))))))
+	(popcnt-step '(
+		0x5555555555555555 0x3333333333333333 0x0f0f0f0f0f0f0f0f
+		0x00ff00ff00ff00ff 0x0000ffff0000ffff 0x00000000ffffffff) 2 res))
+(define(trig-step sign xi fi x2 fs res)
+	(if(< fs 30.0)
+		(trig-step (- sign) (* xi x2) (* fi fs (+ fs 1.0)) x2 (+ fs 2.0) (+ res (/ (* sign xi) fi)))
+		res))
+(define(sin x) (trig-step 1.0 x 1.0 (* x x) 2.0 0.0))
+(define(cos x) (- 1.0 (trig-step 1.0 (* x x) 2.0 (* x x) 3.0 0.0)))
+
