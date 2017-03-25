@@ -5,104 +5,11 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <math.h>
+#include "basiclisp.h"
 
-typedef unsigned int ref_t;
-#define NIL (ref_t)0
+
 #define nelem(x) (sizeof(x)/sizeof(x[0]))
 #define MKREF(val, tag) (((val)<<3)|((tag)&7))
-
-enum {
-	TAG_CONS = 0,	// first so that NIL value of 0 is a cons.
-	TAG_BIGINT,
-	TAG_FLOAT,
-	TAG_INTEGER,
-	TAG_STRING,
-	TAG_SYMBOL,
-	TAG_ERROR,
-	TAG_BUILTIN,
-
-	BLT_IF = 0,
-	BLT_BETA,
-	BLT_CONTINUE,
-	BLT_DEFINE,
-	BLT_LAMBDA,
-	BLT_QUOTE,
-	BLT_CALLEXT,
-	BLT_CALLCC,
-	BLT_SET,
-	BLT_SETCAR,
-	BLT_SETCDR,
-	BLT_CONS,
-	BLT_CAR,
-	BLT_CDR,
-	BLT_LOCALENV,
-	// arithmetic
-	BLT_ADD,
-	BLT_SUB,
-	BLT_MUL,
-	BLT_DIV,
-	BLT_BITIOR,
-	BLT_BITAND,
-	BLT_BITXOR,
-	BLT_BITNOT,
-	BLT_REM,
-	// predicates
-	BLT_ISPAIR,
-	BLT_ISEQ,
-	BLT_ISLESS,
-	BLT_TRUE,
-	BLT_FALSE,
-	// io
-	BLT_PRINT1,
-	NUM_BLT,
-
-	// states for vmstep()
-	INS_APPLY,
-	INS_BETA1,
-	INS_CONTINUE,
-	INS_DEFINE1,
-	INS_SET1,
-	INS_RETURN,
-	INS_EVAL,
-	INS_IF1,
-	INS_LISTEVAL,
-	INS_LISTEVAL1,
-	INS_LISTEVAL2,
-	INS_HEAD1,
-
-};
-
-typedef struct Mach Mach;
-struct Mach {
-	ref_t inst; // state of the vmstep state machine
-
-	ref_t reg0; // temp for mkcons.
-	ref_t reg1; // temp for mkcons.
-	ref_t reg2;
-	ref_t reg3;
-	ref_t reg4;
-
-	ref_t valu; // return value
-	ref_t expr; // expression being evaluated
-	ref_t envr; // current environment, a stack of a-lists.
-	ref_t stak; // call stack
-
-	ref_t *idx;
-	size_t idxlen;
-	size_t idxcap;
-
-	ref_t *mem;
-	size_t memlen;
-	size_t memcap;
-
-	char *tok;
-	size_t toklen;
-	size_t tokcap;
-
-	int lineno;
-
-	int gclock;
-};
 
 static char *bltnames[] = {
 [BLT_IF] = "if",
@@ -172,7 +79,7 @@ pointer(Mach *m, ref_t ref)
 	return &m->mem[urefval(ref)];
 }
 
-static ref_t
+ref_t
 vmload(Mach *m, ref_t base, size_t offset)
 {
 	ref_t *p = pointer(m, base);
@@ -206,7 +113,7 @@ ispair(Mach *m, ref_t a)
 	return reftag(a) == TAG_CONS && a != NIL;
 }
 
-static int
+int
 iserror(Mach *m, ref_t a)
 {
 	return reftag(a) == TAG_ERROR;
@@ -570,7 +477,7 @@ mkcons(Mach *m, ref_t a, ref_t d)
 	return ref;
 }
 
-static ref_t
+ref_t
 listparse(Mach *m, FILE *fp, int justone)
 {
 	ref_t list = NIL, prev = NIL, cons, nval;
@@ -708,7 +615,7 @@ vmgoto(Mach *m, ref_t inst)
 	m->inst = mkref(inst, TAG_BUILTIN);
 }
 
-static void
+void
 vmcall(Mach *m, ref_t ret, ref_t inst)
 {
 	m->stak = mkcons(m, m->envr, m->stak);
@@ -1439,61 +1346,15 @@ vmgc(Mach *m)
 	m->gclock--;
 }
 
-int
-main(int argc, char *argv[])
+void
+lispinit(Mach *m)
 {
-	Mach m;
-	ref_t list;
-	size_t i;
-
-	memset(&m, 0, sizeof m);
-
 	// install initial environment (define built-ins)
-	m.envr = mkcons(&m, NIL, NIL);
+	int i;
+	m->envr = mkcons(m, NIL, NIL);
 	for(i = 0; i < NUM_BLT; i++){
 		ref_t sym;
-		sym = mkstring(&m, bltnames[i], TAG_SYMBOL);
-		vmdefine(&m, sym, mkref(i, TAG_BUILTIN));
+		sym = mkstring(m, bltnames[i], TAG_SYMBOL);
+		vmdefine(m, sym, mkref(i, TAG_BUILTIN));
 	}
-
-	for(i = 1; i < (size_t)argc; i++){
-		FILE *fp;
-		fp = fopen(argv[i], "rb");
-		if(fp == NULL){
-			fprintf(stderr, "cannot open %s\n", argv[i]);
-			return 1;
-		}
-		for(;;){
-			m.expr = listparse(&m, fp, 1);
-			if(iserror(&m, m.expr))
-				break;
-			vmcall(&m, INS_RETURN, INS_EVAL);
-			while(vmstep(&m) == 1)
-				;
-			m.expr = NIL;
-			m.valu = NIL;
-		}
-
-		fclose(fp);
-		fprintf(stderr, "read %s\n", argv[i]);
-	}
-
-	for(;;){
-		printf("> "); fflush(stdout);
-		m.expr = listparse(&m, stdin, 1);
-		if(iserror(&m, m.expr))
-			break;
-		vmcall(&m, INS_RETURN, INS_EVAL);
-		while(vmstep(&m) == 1){
-			fprintf(stderr, "call-external: ");
-			m.valu = vmload(&m, m.expr, 1);
-			fprintf(stderr, "\n");
-		}
-		if(iserror(&m, m.valu))
-			break;
-		m.valu = NIL;
-		m.expr = NIL;
-	}
-	exit(1);
-	return 0;
 }

@@ -14,6 +14,7 @@ LIBS=-lm
 !endif
 
 OFILES=\
+	main.$(O)\
 	basiclisp.$(O)\
 
 basiclisp$(EXE): $(OFILES)
