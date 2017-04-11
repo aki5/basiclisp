@@ -275,6 +275,16 @@ tokclear(Mach *m)
 	m->toklen = 0;
 }
 
+typedef struct Buf Buf;
+struct Buf {
+	char *buf;
+	size_t off;
+	size_t len;
+	size_t cap;
+	int undo;
+	int fd;
+};
+
 static int
 lex(Mach *m, FILE *fp)
 {
@@ -309,8 +319,9 @@ again:
 
 	// it may be a dot, a number or a symbol.
 	// look at the next character to decide.
-	case '.': case '-': case '+':
+	case '.':
 		isinteger = 0;
+	case '-': case '+':
 		if((peekc = fgetc(fp)) == -1)
 			goto caseself;
 		ungetc(peekc, fp);

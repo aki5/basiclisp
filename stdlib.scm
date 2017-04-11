@@ -2,7 +2,6 @@
 (define(list . args) args)
 (define(not x) (if x #f #t))
 (define(null? x) (eq? x '()))
-(define(begin . args) (if(null? args) '() (if(null? (cdr args)) (car args) (apply begin (cdr args)))))
 (define(and . args)
 	(if(null? args) #t
 		(if(not(car args)) #f
@@ -25,15 +24,15 @@
 		(define head (car obj))
 		(if(pair? head)
 			(if(eq? (car head) beta)
-				(list (print-sp needsp) (print1 "(") (print-obj (car (cdr head)) #f) (print1 ")"))
-				(list (print-sp needsp) (print1 "(") (print-obj head #f) (print1 ")")))
-			(list (print-sp needsp) (print1 head)))
+				((lambda() (print-sp needsp) (print1 "(") (print-obj (car (cdr head)) #f) (print1 ")")))
+				((lambda() (print-sp needsp) (print1 "(") (print-obj head #f) (print1 ")"))))
+			((lambda() (print-sp needsp) (print1 head))))
 		(print-obj (cdr obj) #t))
 	(define(print-obj obj needsp)
 		(if(pair? obj)
 			(print-pair obj needsp)
 			(if(null? obj) '()
-				(list (print1 " . ") (print1 obj)))))
+				((lambda() (print1 " . ") (print1 obj))))))
 	(print-obj args #f)
 	args)
 (define(map fn ls)
@@ -44,8 +43,7 @@
 		(cons a(seq(+ a 1) b))))
 (define(reverse ls)
 	(define(rev ls r)
-		(if(null? ls)
-			r
+		(if(null? ls) r
 			(rev(cdr ls)(cons(car ls) r))))
 	(rev ls '()))
 (define(sort cmp ls)
@@ -56,8 +54,8 @@
 					(cons(car ls1)(merge(cdr ls1) ls2))
 					(cons(car ls2)(merge ls1(cdr ls2)))))))
 	(define(pass lls)
-		(if(null? lls) '()
-			(if(null?(cdr lls))(cons(car lls) '())
+		(if(null? lls) lls
+			(if(null?(cdr lls)) lls
 				(cons(merge(car lls)(car(cdr lls)))
 					(pass(cdr(cdr lls)))))))
 	(define(sort2 lls)
@@ -194,9 +192,11 @@
 	(set! threads (append threads (list fn))))
 
 (define(run-threads)
-	(define fn (car threads))
-	(set! threads (cdr threads))
-	(fn))
+	(if(null? threads) '()
+		((lambda()
+			(define fn (car threads))
+			(set! threads (cdr threads))
+			(fn)))))
 
 (define(thread-yield)
 	(define (yield! fn)
@@ -205,9 +205,10 @@
 	(call-with-current-continuation yield!))
 
 (define(start-thread fn . args)
-	(append-thread (lambda() (apply fn args))))
+	(append-thread (lambda() (apply fn args) (run-threads))))
 
 (define(prloop msg seq)
 	(print msg seq "\n")
 	(thread-yield)
-	(prloop msg (+ seq 1)))
+	(if(< seq 1) '()
+		(prloop msg (- seq 1))))
