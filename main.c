@@ -36,25 +36,24 @@ main(int argc, char *argv[])
 		}
 
 		fclose(fp);
-		fprintf(stderr, "read %s\n", argv[i]);
 	}
-
-	for(;;){
-		printf("> "); fflush(stdout);
-		m.expr = listparse(&m, stdin, 1);
-		if(iserror(&m, m.expr))
-			break;
-		vmcall(&m, INS_RETURN, INS_EVAL);
-		while(vmstep(&m) == 1){
-			fprintf(stderr, "call-external: ");
-			m.valu = vmload(&m, m.expr, 1);
-			fprintf(stderr, "\n");
+	if(argc == 1){
+		for(;;){
+			printf("> "); fflush(stdout);
+			m.expr = listparse(&m, stdin, 1);
+			if(iserror(&m, m.expr))
+				break;
+			vmcall(&m, INS_RETURN, INS_EVAL);
+			while(vmstep(&m) == 1){
+				fprintf(stderr, "call-external: ");
+				m.valu = vmload(&m, m.expr, 1);
+				fprintf(stderr, "\n");
+			}
+			if(iserror(&m, m.valu))
+				break;
+			m.valu = NIL;
+			m.expr = NIL;
 		}
-		if(iserror(&m, m.valu))
-			break;
-		m.valu = NIL;
-		m.expr = NIL;
 	}
-	exit(1);
 	return 0;
 }

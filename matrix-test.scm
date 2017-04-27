@@ -1,0 +1,7 @@
+(define dim 30)
+(define m10 (matrix dim dim 0))
+(set-matrix! m10 (lambda(i j)(+ j (* dim i))))
+(print "m10:\n")
+(print-matrix m10)
+(print "transpose m10:\n")
+(print-matrix (transpose m10))

@@ -1,0 +1,48 @@
+
+(define(vector n val)
+	(if (eq? n 0)
+		'()
+		(cons val (vector (- n 1) val))))
+
+(define(matrix m n val)
+	(if (eq? m 0)
+		'()
+		(cons (vector n val) (matrix (- m 1) n val))))
+
+(define(set-matrix! mat fn)
+	(define(set-vector1 vec j fn)
+		(if (null? vec)
+			'()
+			((lambda()
+				(set-car! vec (fn j))
+				(set-vector1 (cdr vec) (+ j 1) fn)))))
+	(define(set-matrix1 mat i fn)
+		(if (null? mat)
+			'()
+			((lambda()
+				(set-vector1 (car mat) 0 (lambda(j)(fn i j)))
+				(set-matrix1 (cdr mat) (+ i 1) fn)))))
+	(set-matrix1 mat 0 fn))
+
+(define(print-matrix mat)
+	(if (null? mat)
+		'()
+		((lambda()
+			(print (car mat) "\n")
+			(print-matrix (cdr mat))))))
+
+(define(next-column mat)
+	(if (null? mat)
+		'()
+		(cons (cdr (car mat)) (next-column (cdr mat)))))
+
+(define(column-vector mat)
+	(if (null? mat)
+		'()
+		(cons (car (car mat)) (column-vector (cdr mat)))))
+
+(define(transpose mat)
+	(if (null? (car mat))
+		'()
+		(cons (column-vector mat) (transpose (next-column mat)))))
+
