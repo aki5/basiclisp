@@ -40,6 +40,7 @@ enum {
 	BLT_ISPAIR,
 	BLT_ISEQ,
 	BLT_ISLESS,
+	BLT_ISERROR,
 	BLT_TRUE,
 	BLT_FALSE,
 	// io

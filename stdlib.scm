@@ -17,6 +17,11 @@
 (define(append head tail)
 	(if(null? head) tail
 		(cons(car head)(append(cdr head) tail))))
+(define(caar ls) (car (car ls)))
+(define(cadr ls) (car (cdr ls)))
+(define(cddr ls) (cdr (cdr ls)))
+(define(cdar ls) (cdr (car ls)))
+(define(inject fn key val) (set-cdr! (cdr fn) (cons (cons key val) (cdr (cdr fn)))))
 (define(print . args)
 	(define(print-sp needsp)
 		(if needsp (print1 " ") '()))
@@ -78,13 +83,13 @@
 	(Y
 		(lambda(fn)
 			(lambda(x)
-				(if(< x 2) 1
+				(if(less? x 2) 1
 					(* x(fn(- x 1))))))))
 (define yfib
 	(Y
 		(lambda(fn)
 			(lambda(x)
-				(if(< x 2)
+				(if(less? x 2)
 					x
 					(+(fn(- x 1))(fn(- x 2))))))))
 (define(primegen)
@@ -133,7 +138,7 @@
 		(if(eq? method 'val) val
 			'())))
 (define(make-vector len)
-	(if(< len 2) 0
+	(if(less? len 2) 0
 		(cons (make-vector (/ len 2)) (make-vector (/ len 2)))))
 (define(make-prng first)
 	(define(findlst lst)
@@ -154,10 +159,10 @@
 		(set-car! first xorval)
 		(* xorval 1181783497276652981)))
 (define random (make-prng '(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)))
-(define(iabs x) (if(< x 0) (- x) x))
+(define(iabs x) (if(less? x 0) (- x) x))
 (define (frandom)
 	(define(conv i f)
-		(if(< i 2) f (conv (/ i 2) (if(eq? (remainder i 2) 0) (/ f 2.0) (+ (/ f 2.0) 0.5)))))
+		(if(less? i 2) f (conv (/ i 2) (if(eq? (remainder i 2) 0) (/ f 2.0) (+ (/ f 2.0) 0.5)))))
 	(conv (iabs (random)) 0.0))
 (define(pow x y) (if(eq? y 0) 1 (* x (pow x (- y 1)))))
 (define(fact x)(if(eq? x 1) 1 (* x (fact (- x 1)))))
@@ -170,7 +175,7 @@
 		0x5555555555555555 0x3333333333333333 0x0f0f0f0f0f0f0f0f
 		0x00ff00ff00ff00ff 0x0000ffff0000ffff 0x00000000ffffffff) 2 res))
 (define(trig-step sign xi fi x2 fs res)
-	(if(< fs 30.0)
+	(if(less? fs 30.0)
 		(trig-step (- sign) (* xi x2) (* fi fs (+ fs 1.0)) x2 (+ fs 2.0) (+ res (/ (* sign xi) fi)))
 		res))
 (define(sin x) (trig-step 1.0 x 1.0 (* x x) 2.0 0.0))
@@ -210,5 +215,6 @@
 (define(prloop msg seq)
 	(print msg seq "\n")
 	(thread-yield)
-	(if(< seq 1) '()
+	(if(less? seq 1) '()
 		(prloop msg (- seq 1))))
+

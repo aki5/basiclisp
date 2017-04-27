@@ -38,7 +38,8 @@ static char *bltnames[] = {
 [BLT_REM] = "remainder",
 [BLT_ISPAIR] = "pair?",
 [BLT_ISEQ] = "eq?",
-[BLT_ISLESS] = "<",
+[BLT_ISLESS] = "less?",
+[BLT_ISERROR] = "error?",
 [BLT_TRUE] = "#t",
 [BLT_FALSE] = "#f",
 [BLT_PRINT1] = "print1",
@@ -181,16 +182,6 @@ tokclear(Mach *m)
 {
 	m->toklen = 0;
 }
-
-typedef struct Buf Buf;
-struct Buf {
-	char *buf;
-	size_t off;
-	size_t len;
-	size_t cap;
-	int undo;
-	int fd;
-};
 
 static int
 lex(Mach *m, FILE *fp)
@@ -608,7 +599,7 @@ atomprint(Mach *m, ref_t aref, FILE *fp)
 		fprintf(fp, "%lld", *(long long *)pointer(m, aref));
 		break;
 	case TAG_FLOAT:
-		fprintf(fp, "%f", *(double *)pointer(m, aref));
+		fprintf(fp, "%e", *(double *)pointer(m, aref));
 		break;
 	case TAG_STRING:
 		fprintf(fp, "%s", (char *)pointer(m, aref));
@@ -948,8 +939,7 @@ again:
 								m->valu = mkref(BLT_FALSE, TAG_BUILTIN);
 								goto eqdone;
 							}
-						}
-						if(refval(ref0) != refval(ref)){
+						} else if(refval(ref0) != refval(ref)){
 							m->valu = mkref(BLT_FALSE, TAG_BUILTIN);
 							goto eqdone;
 						}
@@ -986,6 +976,15 @@ again:
 					} else if(reftag(ref0) < reftag(ref1)){
 						m->valu = mkref(BLT_TRUE, TAG_BUILTIN);
 					}
+					vmreturn(m);
+					goto again;
+				} else if(blt == BLT_ISERROR){ // (error? ...)
+					m->expr = vmload(m, m->expr, 1);
+					m->expr = vmload(m, m->expr, 0);
+					if(iserror(m, m->expr))
+						m->valu =  mkref(BLT_TRUE, TAG_BUILTIN);
+					else
+						m->valu =  mkref(BLT_FALSE, TAG_BUILTIN);
 					vmreturn(m);
 					goto again;
 				} else if(blt == BLT_SETCAR || blt == BLT_SETCDR){
