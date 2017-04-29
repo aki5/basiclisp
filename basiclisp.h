@@ -25,7 +25,8 @@ enum {
 	BLT_CONS,
 	BLT_CAR,
 	BLT_CDR,
-	BLT_LOCALENV,
+	BLT_CLEANENV,
+	BLT_EVAL,
 	// arithmetic
 	BLT_ADD,
 	BLT_SUB,
@@ -73,10 +74,11 @@ struct Mach {
 	ref_t reg3;
 	ref_t reg4;
 
-	ref_t valu; // return value
+	ref_t value; // return value
 	ref_t expr; // expression being evaluated
-	ref_t envr; // current environment, a stack of a-lists.
-	ref_t stak; // call stack
+	ref_t envr; // current environment, a stack of a-lists
+	ref_t stack; // call stack
+	ref_t cleanenvr; // clean environment (just the builtins)
 
 	ref_t *idx;
 	size_t idxlen;

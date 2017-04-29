@@ -32,7 +32,7 @@ main(int argc, char *argv[])
 			while(vmstep(&m) == 1)
 				;
 			m.expr = NIL;
-			m.valu = NIL;
+			m.value = NIL;
 		}
 
 		fclose(fp);
@@ -46,12 +46,12 @@ main(int argc, char *argv[])
 			vmcall(&m, INS_RETURN, INS_EVAL);
 			while(vmstep(&m) == 1){
 				fprintf(stderr, "call-external: ");
-				m.valu = vmload(&m, m.expr, 1);
+				m.value = vmload(&m, m.expr, 1);
 				fprintf(stderr, "\n");
 			}
-			if(iserror(&m, m.valu))
+			if(iserror(&m, m.value))
 				break;
-			m.valu = NIL;
+			m.value = NIL;
 			m.expr = NIL;
 		}
 	}

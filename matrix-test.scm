@@ -52,3 +52,27 @@
 
 (print "apply: " (+ . (1 2 3)) "\n")
 
+(define(argtest a b c)(+ a b c))
+(print "argtest-2: " (argtest 1 2) "\n")
+(print "argtest-3: " (argtest 1 2 3) "\n")
+
+(define xx 123)
+(print "x: " xx " eval x: " (eval xx) "\n")
+
+(define(obj x)(eval x))
+(set-cdr! (cdr obj) (clean-environment))
+(print "clean-env: " (env-syms (clean-environment)) "\n")
+(set! obj (obj '((lambda()(define zz 700)(lambda(x)(eval x))))))
+(set! obj (obj '((lambda()(define zz 700)(lambda(x)(eval x))))))
+(set! obj (obj '((lambda()(define ww 701)(lambda(x)(eval x))))))
+(print "obj xx: " (obj 'xx) "\n")
+(print "obj zz: " (obj 'zz) "\n")
+(print "obj ww: " (obj 'ww) "\n")
+(obj '(set! ww 702))
+(print "obj ww: " (obj 'ww) "\n")
+(print "obj env: " (env-syms (cddr obj)) "\n")
+(print "lambda: " ((lambda()(print "ding!\n")(+ 0 1) (+ 1 2))) "\n")
+(obj '(print "kellukkeet\n"))
+(print "hei" "x\n")
+
+
