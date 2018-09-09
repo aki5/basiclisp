@@ -14,11 +14,16 @@ LIBS=-lm
 !endif
 
 OFILES=\
-	main.$(O)\
 	basiclisp.$(O)\
 
-basiclisp$(EXE): $(OFILES)
-	$(CC) $(LDFLAGS) -o $@ $(OFILES) $(LIBS)
+basiclisp$(EXE): main.$(O) $(OFILES)
+	$(CC) $(LDFLAGS) -o $@ main.$(O) $(OFILES) $(LIBS)
+
+fuzz$(EXE): fuzz.c basiclisp.c
+	$(CC) -O2 -fsanitize=address,undefined,fuzzer -o $@ fuzz.c basiclisp.c
+
+linenoise.$O: linenoise/linenoise.c linenoise/linenoise.h
+	$(CC) $(CFLAGS) -c -o $@ linenoise/linenoise.c
 
 clean:
-	$(RM) basiclisp$(EXE) *.$(O)
+	$(RM) fuzz$(EXE) basiclisp$(EXE) *.$(O)

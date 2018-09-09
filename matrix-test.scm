@@ -17,8 +17,11 @@
 			(forloop condfn postfn bodyfn)))
 		'()))
 
-(define i 0)
-(forloop (lambda()(less? i 10)) (lambda()(set! i (+ 1 i))) (lambda()(print "i: " i "\n")))
+((lambda()
+	(define i 0)
+	(forloop (lambda()(less? i 100)) (lambda()(set! i (+ 1 i))) (lambda()(print " " i)))
+	(print "\n")
+))
 
 (define sum '(1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8 1.9 2.0 0.00000000000000000000000000000000000000000000003))
 (print "sum: " sum "\n")

@@ -1,11 +1,11 @@
 
 (define(vector n val)
-	(if (eq? n 0)
+	(if (equal? n 0)
 		'()
 		(cons val (vector (- n 1) val))))
 
 (define(matrix m n val)
-	(if (eq? m 0)
+	(if (equal? m 0)
 		'()
 		(cons (vector n val) (matrix (- m 1) n val))))
 
@@ -77,7 +77,7 @@
 				(define sumerr (two-sum (car ls) err))
 				(define sum (car sumerr))
 				(define err (cdr sumerr))
-				(if (eq? err 0.0)
+				(if (equal? err 0.0)
 					(transform-sum1 (cdr ls) sum)
 				(cons err (transform-sum1 (cdr ls) sum)))))))
 	(transform-sum1 (cdr ls) (car ls)))
