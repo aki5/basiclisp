@@ -13,6 +13,9 @@ LIBS=-lm
 # \
 !endif
 
+HFILES=\
+	basiclisp.h\
+
 OFILES=\
 	basiclisp.$(O)\
 
@@ -27,3 +30,5 @@ linenoise.$O: linenoise/linenoise.c linenoise/linenoise.h
 
 clean:
 	$(RM) fuzz$(EXE) basiclisp$(EXE) *.$(O)
+
+$(OFILES): $(HFILES)

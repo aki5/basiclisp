@@ -118,6 +118,9 @@ int lispsetport(Mach *m, lispport_t port, int (*writebyte)(int ch, void *ctx), i
 lispref_t lispparse(Mach *m, int justone);
 int lisperror(Mach *m, lispref_t a);
 void lispcall(Mach *m, lispref_t ret, lispref_t inst);
-lispref_t lispload(Mach *m, lispref_t base, size_t offset);
+lispref_t lispcar(Mach *m, lispref_t base);
+lispref_t lispcdr(Mach *m, lispref_t base);
+lispref_t lispsetcar(Mach *m, lispref_t base, lispref_t obj);
+lispref_t lispsetcdr(Mach *m, lispref_t base, lispref_t obj);
 int lispstep(Mach *m);
 void lispgc(Mach *m);
