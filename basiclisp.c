@@ -4,7 +4,6 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include <math.h>
 #include "basiclisp.h"
 
 
@@ -1287,21 +1286,20 @@ static lispref_t
 lispcopy(Mach *m, uint32_t *isforw, Mach *oldm, lispref_t ref)
 {
 	lispref_t nref;
-	size_t off;
 
 	if(reftag(ref) != LISP_TAG_PAIR){
 		nref = ref;
 		goto done;
 	}
 
+	if(ref == LISP_NIL)
+		return LISP_NIL;
+
 	if(getbit(isforw, urefval(ref)) != 0){
 		nref = lispcar(oldm, ref);
 		goto done;
 	}
 
-	off = m->mem.len;
-	if(ref == LISP_NIL)
-		return LISP_NIL;
 	nref = lispcons(m, lispcar(oldm, ref), lispcdr(oldm, ref));
 	lispsetcar(oldm, ref, nref);
 	setbit(isforw, urefval(ref));
@@ -1401,4 +1399,3 @@ lispsetport(Mach *m, lispport_t port, int (*writebyte)(int ch, void *ctx), int (
 	m->ports[port].context = ctx;
 	return 0;
 }
-

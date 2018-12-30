@@ -1,5 +1,5 @@
 
-typedef unsigned int lispref_t;
+typedef unsigned short lispref_t;
 typedef unsigned int lispport_t;
 #define LISP_NIL (lispref_t)0
 enum {
