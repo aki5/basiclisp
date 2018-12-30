@@ -100,11 +100,11 @@ static lispref_t *
 pointer(Mach *m, lispref_t ref)
 {
 	size_t off = urefval(ref);
-	if(off <= 0 || off >= m->memlen){
+	if(off <= 0 || off >= m->mem.len){
 		fprintf(stderr, "dereferencing an out of bounds reference: %x\n", ref);
 		abort();
 	}
-	return &m->mem[off];
+	return m->mem.ref + off;
 }
 
 static char *
@@ -383,29 +383,29 @@ allocate(Mach *m, size_t num, int tag)
 	lispref_t ref;
 	int didgc = 0;
 	// first, try gc.
-	if(!m->gclock && (m->memcap - m->memlen) < num){
+	if(!m->gclock && (m->mem.cap - m->mem.len) < num){
 		lispcollect(m);
 		didgc = 1;
 	}
 recheck:
-	if((didgc && 4*m->memlen >= 3*m->memcap) || (m->memcap - m->memlen) < num){
-		m->memcap = (m->memcap == 0) ? 256 : 2*m->memcap;
-		m->mem = realloc(m->mem, m->memcap * sizeof m->mem[0]);
-		memset(m->mem + m->memlen, 0, m->memcap - m->memlen);
+	if((didgc && 4*m->mem.len >= 3*m->mem.cap) || (m->mem.cap - m->mem.len) < num){
+		m->mem.cap = (m->mem.cap == 0) ? 256 : 2*m->mem.cap;
+		m->mem.ref = realloc(m->mem.ref, m->mem.cap * sizeof m->mem.ref[0]);
+		memset(m->mem.ref + m->mem.len, 0, m->mem.cap - m->mem.len);
 		goto recheck;
 	}
 	// never return LISP_NIL by accident.
-	if(m->memlen == 0){
-		m->memlen += 2;
+	if(m->mem.len == 0){
+		m->mem.len += 2;
 		goto recheck;
 	}
-	ref = mkref(m->memlen, tag);
-	if(urefval(ref) != m->memlen || reftag(ref) != tag){
+	ref = mkref(m->mem.len, tag);
+	if(urefval(ref) != m->mem.len || reftag(ref) != tag){
 		fprintf(stderr, "out of address bits in ref: want %zx.%x got %zx.%x\n",
-			m->memlen, tag, urefval(ref), reftag(ref));
+			m->mem.len, tag, urefval(ref), reftag(ref));
 		exit(1);
 	}
-	m->memlen += num;
+	m->mem.len += num;
 	return ref;
 }
 
@@ -426,13 +426,13 @@ idxinsert1(Mach *m, uint32_t hash, lispref_t ref)
 {
 	size_t i, off;
 
-	for(i = 0; i < m->idxcap; i++){
+	for(i = 0; i < m->idx.cap; i++){
 		lispref_t nref;
-		off = (hash + i) & (m->idxcap - 1);
-		nref = m->idx[off];
+		off = (hash + i) & (m->idx.cap - 1);
+		nref = m->idx.ref[off];
 		if(nref == LISP_NIL){
-			m->idx[off] = ref;
-			m->idxlen++;
+			m->idx.ref[off] = ref;
+			m->idx.len++;
 			return 0;
 		}
 	}
@@ -444,17 +444,17 @@ idxinsert(Mach *m, uint32_t hash, lispref_t ref)
 {
 	size_t i;
 
-	if(3*(m->idxlen/2) >= m->idxcap){
+	if(3*(m->idx.len/2) >= m->idx.cap){
 		lispref_t *old;
 		size_t oldcap;
 
-		old = m->idx;
-		oldcap = m->idxcap;
+		old = m->idx.ref;
+		oldcap = m->idx.cap;
 
-		m->idxcap = m->idxcap < 16 ? 16 : 2*m->idxcap;
-		m->idx = malloc(m->idxcap * sizeof m->idx[0]);
-		memset(m->idx, 0, m->idxcap * sizeof m->idx[0]);
-		m->idxlen = 0;
+		m->idx.cap = m->idx.cap < 16 ? 16 : 2*m->idx.cap;
+		m->idx.ref = malloc(m->idx.cap * sizeof m->idx.ref[0]);
+		memset(m->idx.ref, 0, m->idx.cap * sizeof m->idx.ref[0]);
+		m->idx.len = 0;
 		if(old != NULL){
 			for(i = 0; i < oldcap; i++){
 				lispref_t oldref = old[i];
@@ -479,9 +479,9 @@ idxlookup(Mach *m, uint32_t hash, char *str)
 	lispref_t ref;
 	size_t i, off;
 
-	for(i = 0; i < m->idxcap; i++){
-		off = (hash + i) & (m->idxcap - 1);
-		ref = m->idx[off];
+	for(i = 0; i < m->idx.cap; i++){
+		off = (hash + i) & (m->idx.cap - 1);
+		ref = m->idx.ref[off];
 		if(ref == LISP_NIL)
 			break;
 		if(!strcmp(str, (char *)strpointer(m, ref))){
@@ -1289,39 +1289,25 @@ lispcopy(Mach *m, uint32_t *isforw, Mach *oldm, lispref_t ref)
 	lispref_t nref;
 	size_t off;
 
-	switch(reftag(ref)){
-	case LISP_TAG_INTEGER:
-	case LISP_TAG_ERROR:
-	case LISP_TAG_BUILTIN:
-	case LISP_TAG_STRING:
-	case LISP_TAG_SYMBOL:
+	if(reftag(ref) != LISP_TAG_PAIR){
 		nref = ref;
 		goto done;
-	default:
-		if(getbit(isforw, urefval(ref)) != 0){
-			nref = lispcar(oldm, ref);
-			goto done;
-		}
-		break;
 	}
 
-	off = m->memlen;
-	switch(reftag(ref)){
-	default:
-		fprintf(stderr, "lispcopy: unknown tag %d\n", reftag(ref));
-		abort();
-		return LISP_NIL;
-	case LISP_TAG_PAIR:
-		if(ref == LISP_NIL)
-			return LISP_NIL;
-		nref = lispcons(m, lispcar(oldm, ref), lispcdr(oldm, ref));
-		lispsetcar(oldm, ref, nref);
-		setbit(isforw, urefval(ref));
-		break;
+	if(getbit(isforw, urefval(ref)) != 0){
+		nref = lispcar(oldm, ref);
+		goto done;
 	}
+
+	off = m->mem.len;
+	if(ref == LISP_NIL)
+		return LISP_NIL;
+	nref = lispcons(m, lispcar(oldm, ref), lispcdr(oldm, ref));
+	lispsetcar(oldm, ref, nref);
+	setbit(isforw, urefval(ref));
 done:
 	if(nref == LISP_NIL)
-		fprintf(stderr, "lispcopy: returning LISP_NIL!\n");
+		abort();
 	return nref;
 }
 
@@ -1332,14 +1318,14 @@ lispcollect(Mach *m)
 	uint32_t *isforw;
 	Mach oldm;
 
-	if(m->memlen == 0)
+	if(m->mem.len == 0)
 		return;
 
 	memcpy(&oldm, m, sizeof oldm);
-	isforw = allocbit(m->memlen);
-	m->mem = malloc(m->memcap * sizeof m->mem[0]);
-	memset(m->mem, 0, m->memcap * sizeof m->mem[0]);
-	m->memlen = 0;
+	isforw = allocbit(m->mem.len);
+	m->mem.ref = malloc(m->mem.cap * sizeof m->mem.ref[0]);
+	memset(m->mem.ref, 0, m->mem.cap * sizeof m->mem.ref[0]);
+	m->mem.len = 0;
 	m->gclock++;
 
 	// copy registers as roots.
@@ -1369,15 +1355,15 @@ lispcollect(Mach *m)
 	// we should convert this into an incremental gc scheme, where
 	// both spaces are exposed to lispcar/cdr and lispsetcar/cdr and
 	// perform the operation on the approppriate space based on the bitmap.
-	for(i = 2; i < m->memlen; i++)
-		m->mem[i] = lispcopy(m, isforw, &oldm, m->mem[i]);
+	for(i = 2; i < m->mem.len; i++)
+		m->mem.ref[i] = lispcopy(m, isforw, &oldm, m->mem.ref[i]);
 
 	// re-copy the registers used by cons, lispcopy calls cons itself so
 	// they get overwritten over and over again during gc.
 	m->reg0 = reg0tmp;
 	m->reg1 = reg1tmp;
 
-	free(oldm.mem);
+	free(oldm.mem.ref);
 	free(isforw);
 
 //fprintf(stderr, "."); fflush(stderr);

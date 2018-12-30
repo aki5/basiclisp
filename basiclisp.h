@@ -82,13 +82,17 @@ struct Mach {
 	lispref_t stack; // call stack
 	lispref_t cleanenvr; // clean environment (just the builtins)
 
-	lispref_t *idx;
-	size_t idxlen;
-	size_t idxcap;
+	struct {
+		lispref_t *ref;
+		size_t len;
+		size_t cap;
+	} idx;
 
-	lispref_t *mem;
-	size_t memlen;
-	size_t memcap;
+	struct {
+		lispref_t *ref;
+		size_t len;
+		size_t cap;
+	} mem;
 
 	struct {
 		char *p;
