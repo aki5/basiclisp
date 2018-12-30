@@ -57,6 +57,7 @@ lispregister(Mach *m, lispref_t val)
 			return regp;
 		}
 	}
+	fprintf(stderr, "lispregister: ran out of registers\n");
 	abort();
 	return NULL;
 }
@@ -106,21 +107,32 @@ pointer(Mach *m, lispref_t ref)
 	return &m->mem[off];
 }
 
-lispref_t
+static char *
+strpointer(Mach *m, lispref_t ref)
+{
+	size_t off = urefval(ref);
+	if(off <= 0 || off >= m->strings.len){
+		fprintf(stderr, "dereferencing an out of bounds string reference: %x\n", ref);
+		abort();
+	}
+	return m->strings.p + off;
+}
+
+static lispref_t
 lispcar(Mach *m, lispref_t base)
 {
 	lispref_t *p = pointer(m, base);
 	return p[0];
 }
 
-lispref_t
+static lispref_t
 lispcdr(Mach *m, lispref_t base)
 {
 	lispref_t *p = pointer(m, base);
 	return p[1];
 }
 
-lispref_t
+static lispref_t
 lispsetcar(Mach *m, lispref_t base, lispref_t obj)
 {
 	lispref_t *p = pointer(m, base);
@@ -128,7 +140,7 @@ lispsetcar(Mach *m, lispref_t base, lispref_t obj)
 	return obj;
 }
 
-lispref_t
+static lispref_t
 lispsetcdr(Mach *m, lispref_t base, lispref_t obj)
 {
 	lispref_t *p = pointer(m, base);
@@ -287,7 +299,7 @@ again:
 		}
 		if(ch != -1)
 			m->ports[0].unreadbyte(ch, m->ports[0].context);
-		return isinteger ? LISP_TAG_INTEGER : LISP_TAG_FLOAT;
+		return isinteger ? LISP_TAG_INTEGER : LISP_TAG_STRING;
 
 	// string constant, detect and interpret standard escapes like in c.
 	case '"':
@@ -348,13 +360,31 @@ again:
 }
 
 static lispref_t
+stralloc(Mach *m, char *str, int tag)
+{
+	// don't return nil by accident
+	if(m->strings.len == 0)
+		m->strings.len = 1;
+	size_t slen = strlen(str)+1;
+	while(m->strings.len+slen >= m->strings.cap){
+		m->strings.cap = (m->strings.cap == 0) ? 256 : 2*m->strings.cap;
+		m->strings.p = realloc(m->strings.p, m->strings.cap * sizeof m->strings.p[0]);
+		memset(m->strings.p + m->strings.len, 0, m->strings.cap - m->strings.len);
+	}
+	lispref_t ref = mkref(m->strings.len, tag);
+	memcpy(m->strings.p + m->strings.len, str, slen);
+	m->strings.len += slen;
+	return ref;
+}
+
+static lispref_t
 allocate(Mach *m, size_t num, int tag)
 {
 	lispref_t ref;
 	int didgc = 0;
 	// first, try gc.
 	if(!m->gclock && (m->memcap - m->memlen) < num){
-		lispgc(m);
+		lispcollect(m);
 		didgc = 1;
 	}
 recheck:
@@ -430,7 +460,7 @@ idxinsert(Mach *m, uint32_t hash, lispref_t ref)
 				lispref_t oldref = old[i];
 				if(oldref != LISP_NIL){
 					uint32_t oldhash;
-					oldhash = fnv32a((char *)pointer(m, oldref), 0);
+					oldhash = fnv32a((char *)strpointer(m, oldref), 0);
 					if(idxinsert1(m, oldhash, oldref) == -1)
 						abort();
 				}
@@ -454,7 +484,7 @@ idxlookup(Mach *m, uint32_t hash, char *str)
 		ref = m->idx[off];
 		if(ref == LISP_NIL)
 			break;
-		if(!strcmp(str, (char *)pointer(m, ref))){
+		if(!strcmp(str, (char *)strpointer(m, ref))){
 			return ref;
 		}
 	}
@@ -462,43 +492,22 @@ idxlookup(Mach *m, uint32_t hash, char *str)
 }
 
 static lispref_t
-mkany(Mach *m, void *data, size_t len, int type)
-{
-	size_t num;
-	lispref_t ref;
-
-	num = (len + sizeof(ref) - 1) / sizeof(ref);
-	ref = allocate(m, num, type);
-	memcpy(pointer(m, ref), data, len);
-	return ref;
-}
-
-static lispref_t
 mkint(Mach *m, long long v)
 {
-	lispref_t ref;
-
-	ref = mkref(v, LISP_TAG_INTEGER);
+	lispref_t ref = mkref(v, LISP_TAG_INTEGER);
 	if((long long)refval(ref) == v)
 		return ref;
-
-	return mkany(m, &v, sizeof v, LISP_TAG_BIGINT);
-}
-
-static lispref_t
-mkfloat(Mach *m, double v)
-{
-	return mkany(m, &v, sizeof v, LISP_TAG_FLOAT);
+	fprintf(stderr, "mkint: integer overflow %lld\n", v);
+	abort();
 }
 
 static lispref_t
 mkstring(Mach *m, char *str, int type)
 {
-	uint32_t hash;
 	lispref_t ref;
-	hash = fnv32a(str, 0);
+	uint32_t hash = fnv32a(str, 0);
 	if((ref = idxlookup(m, hash, str)) == LISP_NIL){
-		ref = mkany(m, str, strlen(str)+1, type);
+		ref = stralloc(m, str, type);
 		idxinsert(m, hash, ref);
 	}
 	return ref;
@@ -552,9 +561,6 @@ m->gclock++;
 		case LISP_TAG_INTEGER:
 			nval = mkint(m, strtoll(m->tok, NULL, 0));
 			goto append;
-		case LISP_TAG_FLOAT:
-			nval = mkfloat(m, strtod(m->tok, NULL));
-			goto append;
 		case LISP_TAG_STRING:
 			nval = mkstring(m, m->tok, LISP_TAG_STRING);
 			goto append;
@@ -602,18 +608,8 @@ loadint(Mach *m, lispref_t ref)
 	int tag = reftag(ref);
 	if(tag == LISP_TAG_INTEGER)
 		return (long long)refval(ref);
-	if(tag == LISP_TAG_BIGINT)
-		return *(long long *)pointer(m, ref);
 	fprintf(stderr, "loadint: non-integer reference\n");
-	return 0;
-}
-
-static double
-loadfloat(Mach *m, lispref_t ref)
-{
-	if(reftag(ref) == LISP_TAG_FLOAT)
-		return *(double *)pointer(m, ref);
-	fprintf(stderr, "loadfloat: non-float reference\n");
+	abort();
 	return 0;
 }
 
@@ -660,17 +656,11 @@ atomprint(Mach *m, lispref_t aref, lispport_t port)
 	case LISP_TAG_INTEGER:
 		snprintf(buf, sizeof buf, "%zd", refval(aref));
 		break;
-	case LISP_TAG_BIGINT:
-		snprintf(buf, sizeof buf, "%lld", *(long long *)pointer(m, aref));
-		break;
-	case LISP_TAG_FLOAT:
-		snprintf(buf, sizeof buf, "%g", *(double *)pointer(m, aref));
-		break;
 	case LISP_TAG_STRING:
-		snprintf(buf, sizeof buf, "%s", (char *)pointer(m, aref));
+		snprintf(buf, sizeof buf, "%s", (char *)strpointer(m, aref));
 		break;
 	case LISP_TAG_SYMBOL:
-		snprintf(buf, sizeof buf, "%s", (char *)pointer(m, aref));
+		snprintf(buf, sizeof buf, "%s", (char *)strpointer(m, aref));
 		break;
 	}
 	lispwrite(m, port, buf, strlen(buf));
@@ -747,7 +737,7 @@ again:
 				lst = lispcdr(m, lst);
 			}
 			if(lst == LISP_NIL){
-				fprintf(stderr, "undefined symbol: %s\n", (char *)pointer(m, m->expr));
+				fprintf(stderr, "undefined symbol: %s\n", (char *)strpointer(m, m->expr));
 				m->value = m->expr; // undefined
 			}
 			lispreturn(m);
@@ -850,7 +840,7 @@ again:
 					if(lst != LISP_NIL)
 						lispsetcdr(m, pair, m->value);
 					else
-						fprintf(stderr, "set!: undefined symbol %s\n", (char *)pointer(m, *sym));
+						fprintf(stderr, "set!: undefined symbol %s\n", (char *)strpointer(m, *sym));
 					lisprelease(m, sym);
 					m->value = LISP_NIL;
 					lispreturn(m);
@@ -884,16 +874,12 @@ again:
 				if(blt >= LISP_BUILTIN_ADD && blt <= LISP_BUILTIN_REM){
 					lispref_t ref0, ref, tag0, tag;
 					long long ires;
-					double fres;
 					int nterms;
 					m->expr = lispcdr(m, m->expr);
 					ref0 = lispcar(m, m->expr);
 					tag0 = reftag(ref0);
-					if(tag0 == LISP_TAG_INTEGER || tag0 == LISP_TAG_BIGINT){
+					if(tag0 == LISP_TAG_INTEGER){
 						ires = loadint(m, ref0);
-						tag0 = LISP_TAG_INTEGER;
-					} else if(tag0 == LISP_TAG_FLOAT){
-						fres = loadfloat(m, ref0);
 					} else {
 						m->value = LISP_TAG_ERROR;
 						lispreturn(m);
@@ -905,59 +891,47 @@ again:
 						nterms++;
 						ref = lispcar(m, m->expr);
 						tag = reftag(ref);
-						if(tag == LISP_TAG_BIGINT)
-							tag = LISP_TAG_INTEGER;
 						if(tag0 != tag){
 							m->value = LISP_TAG_ERROR;
 							lispreturn(m);
 							goto again;
 						}
-						if(reftag(ref0) == LISP_TAG_FLOAT){
-							double tmp = loadfloat(m, ref);
-							if(blt == LISP_BUILTIN_ADD)
-								fres += tmp;
-							else if(blt == LISP_BUILTIN_SUB)
-								fres -= tmp;
-							else if(blt == LISP_BUILTIN_MUL)
-								fres *= tmp;
-							else if(blt == LISP_BUILTIN_DIV)
-								fres /= tmp;
-							else if(blt == LISP_BUILTIN_REM)
-								fres = fmod(fres, tmp);
-							else
-								fprintf(stderr, "invalid op %d for float\n", blt);
-						} else {
-							long long tmp = loadint(m, ref);
-							if(blt == LISP_BUILTIN_ADD)
-								ires += tmp;
-							else if(blt == LISP_BUILTIN_SUB)
-								ires -= tmp;
-							else if(blt == LISP_BUILTIN_MUL)
-								ires *= tmp;
-							else if(blt == LISP_BUILTIN_DIV)
-								ires /= tmp;
-							else if(blt == LISP_BUILTIN_BITIOR)
-								ires |= tmp;
-							else if(blt == LISP_BUILTIN_BITAND)
-								ires &= tmp;
-							else if(blt == LISP_BUILTIN_BITXOR)
-								ires ^= tmp;
-							else if(blt == LISP_BUILTIN_BITNOT)
-								ires = ~tmp;
-							else if(blt == LISP_BUILTIN_REM)
-								ires %= tmp;
+						long long tmp = loadint(m, ref);
+						switch(blt){
+						case LISP_BUILTIN_ADD:
+							ires += tmp;
+							break;
+						case LISP_BUILTIN_SUB:
+							ires -= tmp;
+							break;
+						case LISP_BUILTIN_MUL:
+							ires *= tmp;
+							break;
+						case LISP_BUILTIN_DIV:
+							ires /= tmp;
+							break;
+						case LISP_BUILTIN_BITIOR:
+							ires |= tmp;
+							break;
+						case LISP_BUILTIN_BITAND:
+							ires &= tmp;
+							break;
+						case LISP_BUILTIN_BITXOR:
+							ires ^= tmp;
+							break;
+						case LISP_BUILTIN_BITNOT:
+							ires = ~tmp;
+							break;
+						case LISP_BUILTIN_REM:
+							ires %= tmp;
+							break;
 						}
 						m->expr = lispcdr(m, m->expr);
 					}
-					if(reftag(ref0) == LISP_TAG_FLOAT){
-						if(blt == LISP_BUILTIN_SUB && nterms == 0)
-							fres = -fres;
-						m->value = mkfloat(m, fres);
-					} else {
-						if(blt == LISP_BUILTIN_SUB && nterms == 0)
-							ires = -ires;
-						m->value = mkint(m, ires);
-					}
+					// special case for unary sub: make it a negate.
+					if(blt == LISP_BUILTIN_SUB && nterms == 0)
+						ires = -ires;
+					m->value = mkint(m, ires);
 					lispreturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_ISPAIR){ // (pair? ...)
@@ -980,15 +954,7 @@ again:
 							m->value = mkref(LISP_BUILTIN_FALSE, LISP_TAG_BUILTIN);
 							goto eqdone;
 						}
-						if(reftag(ref0) == LISP_TAG_FLOAT){
-							double v0, v;
-							v0 = loadfloat(m, ref0);
-							v = loadfloat(m, ref);
-							if(v0 != v){
-								m->value = mkref(LISP_BUILTIN_FALSE, LISP_TAG_BUILTIN);
-								goto eqdone;
-							}
-						} else if(reftag(ref0) == LISP_TAG_INTEGER || reftag(ref0) == LISP_TAG_BIGINT){
+						if(reftag(ref0) == LISP_TAG_INTEGER){
 							long long v0, v;
 							v0 = loadint(m, ref0);
 							v = loadint(m, ref);
@@ -1013,22 +979,15 @@ again:
 					m->expr = lispcdr(m, m->expr);
 					ref1 = lispcar(m, m->expr);
 					m->value = mkref(LISP_BUILTIN_FALSE, LISP_TAG_BUILTIN); // default to false.
-					if((reftag(ref0) == LISP_TAG_INTEGER || reftag(ref0) == LISP_TAG_BIGINT)
-					&& (reftag(ref1) == LISP_TAG_INTEGER || reftag(ref1) == LISP_TAG_BIGINT)){
+					if(reftag(ref0) == LISP_TAG_INTEGER && reftag(ref1) == LISP_TAG_INTEGER){
 						long long i0, i1;
 						i0 = loadint(m, ref0);
 						i1 = loadint(m, ref1);
 						if(i0 < i1)
 							m->value = mkref(LISP_BUILTIN_TRUE, LISP_TAG_BUILTIN);
-					} else if(reftag(ref0) == LISP_TAG_FLOAT && reftag(ref1) == LISP_TAG_FLOAT){
-						double f0, f1;
-						f0 = loadfloat(m, ref0);
-						f1 = loadfloat(m, ref1);
-						if(f0 < f1)
-							m->value = mkref(LISP_BUILTIN_TRUE, LISP_TAG_BUILTIN);
 					} else if((reftag(ref0) == LISP_TAG_SYMBOL && reftag(ref1) == LISP_TAG_SYMBOL)
 						|| (reftag(ref0) == LISP_TAG_STRING && reftag(ref1) == LISP_TAG_STRING)){
-						if(strcmp((char*)pointer(m, ref0), (char*)pointer(m, ref1)) < 0)
+						if(strcmp((char*)strpointer(m, ref0), (char*)strpointer(m, ref1)) < 0)
 							m->value = mkref(LISP_BUILTIN_TRUE, LISP_TAG_BUILTIN);
 					} else if(reftag(ref0) < reftag(ref1)){
 						m->value = mkref(LISP_BUILTIN_TRUE, LISP_TAG_BUILTIN);
@@ -1325,7 +1284,7 @@ setbit(uint32_t *map, size_t i)
 }
 
 static lispref_t
-lispcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, Mach *oldm, lispref_t ref)
+lispcopy(Mach *m, uint32_t *isforw, Mach *oldm, lispref_t ref)
 {
 	lispref_t nref;
 	size_t off;
@@ -1334,6 +1293,8 @@ lispcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, Mach *oldm, lispref_t ref)
 	case LISP_TAG_INTEGER:
 	case LISP_TAG_ERROR:
 	case LISP_TAG_BUILTIN:
+	case LISP_TAG_STRING:
+	case LISP_TAG_SYMBOL:
 		nref = ref;
 		goto done;
 	default:
@@ -1348,30 +1309,16 @@ lispcopy(Mach *m, uint32_t *isatom, uint32_t *isforw, Mach *oldm, lispref_t ref)
 	switch(reftag(ref)){
 	default:
 		fprintf(stderr, "lispcopy: unknown tag %d\n", reftag(ref));
+		abort();
 		return LISP_NIL;
 	case LISP_TAG_PAIR:
 		if(ref == LISP_NIL)
 			return LISP_NIL;
 		nref = lispcons(m, lispcar(oldm, ref), lispcdr(oldm, ref));
-		goto forw;
-	case LISP_TAG_BIGINT:
-		nref = mkint(m, loadint(oldm, ref));
-		goto forw;
-	case LISP_TAG_FLOAT:
-		nref = mkfloat(m, loadfloat(oldm, ref));
-		goto forw;
-	case LISP_TAG_STRING:
-	case LISP_TAG_SYMBOL:
-		//fprintf(stderr, "gc: %s: %s\n", reftag(ref) == LISP_TAG_SYMBOL ? "symbol" : "string", (char *)pointer(oldm, ref));
-		nref = mkstring(m, (char *)pointer(oldm, ref), reftag(ref));
-	forw:
 		lispsetcar(oldm, ref, nref);
 		setbit(isforw, urefval(ref));
 		break;
 	}
-	if(reftag(ref) != LISP_TAG_PAIR)
-		for(;off < m->memlen; off++)
-			setbit(isatom, off);
 done:
 	if(nref == LISP_NIL)
 		fprintf(stderr, "lispcopy: returning LISP_NIL!\n");
@@ -1379,10 +1326,9 @@ done:
 }
 
 void
-lispgc(Mach *m)
+lispcollect(Mach *m)
 {
 	size_t i;
-	uint32_t *isatom;
 	uint32_t *isforw;
 	Mach oldm;
 
@@ -1390,36 +1336,32 @@ lispgc(Mach *m)
 		return;
 
 	memcpy(&oldm, m, sizeof oldm);
-
-	isatom = allocbit(m->memlen);
 	isforw = allocbit(m->memlen);
 	m->mem = malloc(m->memcap * sizeof m->mem[0]);
 	memset(m->mem, 0, m->memcap * sizeof m->mem[0]);
 	m->memlen = 0;
-	m->idxcap = 0;
-	m->idxlen = 0;
 	m->gclock++;
 
 	// copy registers as roots.
-	lispref_t reg0tmp = lispcopy(m, isatom, isforw, &oldm, oldm.reg0);
-	lispref_t reg1tmp = lispcopy(m, isatom, isforw, &oldm, oldm.reg1);
-	m->reg2 = lispcopy(m, isatom, isforw, &oldm, oldm.reg2);
-	m->reg3 = lispcopy(m, isatom, isforw, &oldm, oldm.reg3);
-	m->reg4 = lispcopy(m, isatom, isforw, &oldm, oldm.reg4);
+	lispref_t reg0tmp = lispcopy(m, isforw, &oldm, oldm.reg0);
+	lispref_t reg1tmp = lispcopy(m, isforw, &oldm, oldm.reg1);
+	m->reg2 = lispcopy(m, isforw, &oldm, oldm.reg2);
+	m->reg3 = lispcopy(m, isforw, &oldm, oldm.reg3);
+	m->reg4 = lispcopy(m, isforw, &oldm, oldm.reg4);
 
 	// copy the "dynamic" registers.
 	uint32_t reguse = oldm.reguse;
 	for(size_t i = 0; i < nelem(m->regs); i++)
 		if((reguse & (1<<i)) != 0)
-			m->regs[i] = lispcopy(m, isatom, isforw, &oldm, oldm.regs[i]);
+			m->regs[i] = lispcopy(m, isforw, &oldm, oldm.regs[i]);
 	m->reguse = reguse;
 
-	m->value = lispcopy(m, isatom, isforw, &oldm, oldm.value);
-	m->expr = lispcopy(m, isatom, isforw, &oldm, oldm.expr);
-	m->envr = lispcopy(m, isatom, isforw, &oldm, oldm.envr);
-	m->stack = lispcopy(m, isatom, isforw, &oldm, oldm.stack);
+	m->value = lispcopy(m, isforw, &oldm, oldm.value);
+	m->expr = lispcopy(m, isforw, &oldm, oldm.expr);
+	m->envr = lispcopy(m, isforw, &oldm, oldm.envr);
+	m->stack = lispcopy(m, isforw, &oldm, oldm.stack);
 
-	m->cleanenvr = lispcopy(m, isatom, isforw, &oldm, oldm.cleanenvr);
+	m->cleanenvr = lispcopy(m, isforw, &oldm, oldm.cleanenvr);
 
 	// cheney style breadth first scan, m->memlen effectively
 	// acts as the "tail" while i is the "head", and pointers
@@ -1427,11 +1369,8 @@ lispgc(Mach *m)
 	// we should convert this into an incremental gc scheme, where
 	// both spaces are exposed to lispcar/cdr and lispsetcar/cdr and
 	// perform the operation on the approppriate space based on the bitmap.
-	for(i = 2; i < m->memlen; i++){
-		if(getbit(isatom, i) != 0)
-			continue;
-		m->mem[i] = lispcopy(m, isatom, isforw, &oldm, m->mem[i]);
-	}
+	for(i = 2; i < m->memlen; i++)
+		m->mem[i] = lispcopy(m, isforw, &oldm, m->mem[i]);
 
 	// re-copy the registers used by cons, lispcopy calls cons itself so
 	// they get overwritten over and over again during gc.
@@ -1439,7 +1378,6 @@ lispgc(Mach *m)
 	m->reg1 = reg1tmp;
 
 	free(oldm.mem);
-	free(isatom);
 	free(isforw);
 
 //fprintf(stderr, "."); fflush(stderr);

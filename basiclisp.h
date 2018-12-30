@@ -10,11 +10,6 @@ enum {
 	LISP_TAG_ERROR,
 	LISP_TAG_BUILTIN,
 
-	// todo: instead of these, we should have LISP_TAG_EXTERN and
-	// 
-	LISP_TAG_BIGINT,
-	LISP_TAG_FLOAT,
-
 	LISP_BUILTIN_IF = 0,
 	LISP_BUILTIN_BETA,
 	LISP_BUILTIN_CONTINUE,
@@ -95,6 +90,12 @@ struct Mach {
 	size_t memlen;
 	size_t memcap;
 
+	struct {
+		char *p;
+		size_t len;
+		size_t cap;
+	} strings;
+
 	char *tok;
 	size_t toklen;
 	size_t tokcap;
@@ -118,9 +119,5 @@ int lispsetport(Mach *m, lispport_t port, int (*writebyte)(int ch, void *ctx), i
 lispref_t lispparse(Mach *m, int justone);
 int lisperror(Mach *m, lispref_t a);
 void lispcall(Mach *m, lispref_t ret, lispref_t inst);
-lispref_t lispcar(Mach *m, lispref_t base);
-lispref_t lispcdr(Mach *m, lispref_t base);
-lispref_t lispsetcar(Mach *m, lispref_t base, lispref_t obj);
-lispref_t lispsetcdr(Mach *m, lispref_t base, lispref_t obj);
 int lispstep(Mach *m);
-void lispgc(Mach *m);
+void lispcollect(Mach *m);
