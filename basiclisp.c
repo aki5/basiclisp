@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <assert.h>
 #include "basiclisp.h"
 
 
@@ -74,25 +75,25 @@ lisprelease(Mach *m, lispref_t *regp)
 static lispref_t
 mkref(int val, int tag)
 {
-	return (((val)<<3)|((tag)&7));
+	return ((val<<LISP_TAG_BITS)|(tag&LISP_TAG_MASK));
 }
 
 static int
 reftag(lispref_t ref)
 {
-	return ref & 7;
+	return ref & LISP_TAG_MASK;
 }
 
 static intptr_t
 refval(lispref_t ref)
 {
-	return (intptr_t)ref >> 3;
+	return (intptr_t)ref >> LISP_TAG_BITS;
 }
 
 static size_t
 urefval(lispref_t ref)
 {
-	return ref >> 3;
+	return ref >> LISP_TAG_BITS;
 }
 
 static lispref_t *
@@ -631,7 +632,6 @@ static int
 atomprint(Mach *m, lispref_t aref, lispport_t port)
 {
 	char buf[128];
-	char *ptr = NULL;
 	int tag = reftag(aref);
 	switch(tag){
 	default:
@@ -1259,102 +1259,79 @@ listeval_first:
 	}
 }
 
-static uint32_t *
-allocbit(size_t i)
-{
-	uint32_t *map;
-	size_t nmap = (i+31)/32;
-
-	map = malloc(nmap * sizeof map[0]);
-	memset(map, 0, nmap * sizeof map[0]);
-	return map;
-}
-
-static uint32_t
-getbit(uint32_t *map, size_t i)
-{
-	return map[i/32] & (1 << (i&31));
-}
-
-static void
-setbit(uint32_t *map, size_t i)
-{
-	map[i/32] |= 1 << (i&31);
-}
-
+/*
+ *	The following two routines implement a copying garbage collector.
+ *
+ *	Lispcopy takes two machines as parameters, and a reference in oldm.
+ *	If the element is a pair, check whether it is a forwarding entry or not.
+ *	If yes, return what the forwarding entry has.
+ *	Else, append the (unmodified) pair to newm and change the pair in oldm into
+ *	a forwarding entry to the pair's location in newm.
+ *
+ *	Strings, symbol names and their index are eternal constants which can be
+ *	freed entirely if printing of constants or symbol names isn't required and
+ *	memory is somehow really that scarce.
+ */
 static lispref_t
-lispcopy(Mach *m, uint32_t *isforw, Mach *oldm, lispref_t ref)
+lispcopy(Mach *newm, Mach *oldm, lispref_t ref)
 {
-	lispref_t nref;
-
-	if(reftag(ref) != LISP_TAG_PAIR){
-		nref = ref;
-		goto done;
+	if(reftag(ref) == LISP_TAG_PAIR){
+		if(ref == LISP_NIL)
+			return LISP_NIL;
+		if(reftag(lispcar(oldm, ref)) == LISP_TAG_FORWARD)
+			return lispcdr(oldm, ref);
+		// load from old, cons in new. this is the copy.
+		lispref_t newref = lispcons(newm, lispcar(oldm, ref), lispcdr(oldm, ref));
+		// rewrite oldm to point to new.
+		lispsetcar(oldm, ref, mkref(0, LISP_TAG_FORWARD));
+		lispsetcdr(oldm, ref, newref);
+		return newref;
 	}
-
-	if(ref == LISP_NIL)
-		return LISP_NIL;
-
-	if(getbit(isforw, urefval(ref)) != 0){
-		nref = lispcar(oldm, ref);
-		goto done;
-	}
-
-	nref = lispcons(m, lispcar(oldm, ref), lispcdr(oldm, ref));
-	lispsetcar(oldm, ref, nref);
-	setbit(isforw, urefval(ref));
-done:
-	if(nref == LISP_NIL)
-		abort();
-	return nref;
+	return ref;
 }
 
+/*
+ *	This is the main garbage collector routine. The idea is to create the root
+ *	set from vm registers using lispcopy to an otherwise empty machine.
+ *	After the root set is formed, it proceeds in a breath-first manner, calling
+ *	lispcopy on all of its memory locations until everything has been collapsed.
+ */
 void
 lispcollect(Mach *m)
 {
-	size_t i;
-	uint32_t *isforw;
-	Mach oldm;
-
 	if(m->mem.len == 0)
 		return;
 
+	Mach oldm;
 	memcpy(&oldm, m, sizeof oldm);
-	isforw = allocbit(m->mem.len);
 	m->mem.ref = malloc(m->mem.cap * sizeof m->mem.ref[0]);
 	memset(m->mem.ref, 0, m->mem.cap * sizeof m->mem.ref[0]);
 	m->mem.len = 0;
 	m->gclock++;
 
 	// copy registers as roots.
-	lispref_t reg0tmp = lispcopy(m, isforw, &oldm, oldm.reg0);
-	lispref_t reg1tmp = lispcopy(m, isforw, &oldm, oldm.reg1);
-	m->reg2 = lispcopy(m, isforw, &oldm, oldm.reg2);
-	m->reg3 = lispcopy(m, isforw, &oldm, oldm.reg3);
-	m->reg4 = lispcopy(m, isforw, &oldm, oldm.reg4);
+	lispref_t reg0tmp = lispcopy(m, &oldm, oldm.reg0);
+	lispref_t reg1tmp = lispcopy(m, &oldm, oldm.reg1);
+	m->reg2 = lispcopy(m, &oldm, oldm.reg2);
+	m->reg3 = lispcopy(m, &oldm, oldm.reg3);
+	m->reg4 = lispcopy(m, &oldm, oldm.reg4);
 
 	// copy the "dynamic" registers.
 	uint32_t reguse = oldm.reguse;
 	for(size_t i = 0; i < nelem(m->regs); i++)
 		if((reguse & (1<<i)) != 0)
-			m->regs[i] = lispcopy(m, isforw, &oldm, oldm.regs[i]);
+			m->regs[i] = lispcopy(m, &oldm, oldm.regs[i]);
 	m->reguse = reguse;
 
-	m->value = lispcopy(m, isforw, &oldm, oldm.value);
-	m->expr = lispcopy(m, isforw, &oldm, oldm.expr);
-	m->envr = lispcopy(m, isforw, &oldm, oldm.envr);
-	m->stack = lispcopy(m, isforw, &oldm, oldm.stack);
+	m->value = lispcopy(m, &oldm, oldm.value);
+	m->expr = lispcopy(m, &oldm, oldm.expr);
+	m->envr = lispcopy(m, &oldm, oldm.envr);
+	m->stack = lispcopy(m, &oldm, oldm.stack);
 
-	m->cleanenvr = lispcopy(m, isforw, &oldm, oldm.cleanenvr);
+	m->cleanenvr = lispcopy(m, &oldm, oldm.cleanenvr);
 
-	// cheney style breadth first scan, m->memlen effectively
-	// acts as the "tail" while i is the "head", and pointers
-	// between i and tail are yet to be converted (forwarded)
-	// we should convert this into an incremental gc scheme, where
-	// both spaces are exposed to lispcar/cdr and lispsetcar/cdr and
-	// perform the operation on the approppriate space based on the bitmap.
-	for(i = 2; i < m->mem.len; i++)
-		m->mem.ref[i] = lispcopy(m, isforw, &oldm, m->mem.ref[i]);
+	for(size_t i = 2; i < m->mem.len; i++)
+		m->mem.ref[i] = lispcopy(m, &oldm, m->mem.ref[i]);
 
 	// re-copy the registers used by cons, lispcopy calls cons itself so
 	// they get overwritten over and over again during gc.
@@ -1362,7 +1339,6 @@ lispcollect(Mach *m)
 	m->reg1 = reg1tmp;
 
 	free(oldm.mem.ref);
-	free(isforw);
 
 //fprintf(stderr, "."); fflush(stderr);
 	m->gclock--;
@@ -1372,11 +1348,9 @@ void
 lispinit(Mach *m)
 {
 	// install initial environment (define built-ins)
-	int i;
 	m->envr = lispcons(m, LISP_NIL, LISP_NIL);
-	for(i = 0; i < LISP_NUM_BUILTINS; i++){
-		lispref_t sym;
-		sym = mkstring(m, bltnames[i], LISP_TAG_SYMBOL);
+	for(size_t i = 0; i < LISP_NUM_BUILTINS; i++){
+		lispref_t sym = mkstring(m, bltnames[i], LISP_TAG_SYMBOL);
 		lispdefine(m, sym, mkref(i, LISP_TAG_BUILTIN));
 		m->cleanenvr = lispcdr(m, m->envr);
 	}

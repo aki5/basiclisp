@@ -1,14 +1,18 @@
 
-typedef unsigned short lispref_t;
+typedef unsigned int lispref_t;
 typedef unsigned int lispport_t;
 #define LISP_NIL (lispref_t)0
 enum {
-	LISP_TAG_PAIR = 0,	// first so that NIL value of 0 is a cons.
-	LISP_TAG_INTEGER,
-	LISP_TAG_STRING,
-	LISP_TAG_SYMBOL,
-	LISP_TAG_ERROR,
-	LISP_TAG_BUILTIN,
+	LISP_TAG_BITS = 3,
+	LISP_TAG_MASK = (1<<LISP_TAG_BITS)-1,
+
+	LISP_TAG_PAIR = 0,	// first so that NIL value of 0 is a cons
+	LISP_TAG_FORWARD,	// for garbage collection
+	LISP_TAG_INTEGER,	// a 29-bit signed int posturing as a reference
+	LISP_TAG_STRING,	// string literal
+	LISP_TAG_SYMBOL,	// symbol (has a name in the string table)
+	LISP_TAG_ERROR,		// error (explanation in the string table)
+	LISP_TAG_BUILTIN,	// built-in function (enumerated below)
 
 	LISP_BUILTIN_IF = 0,
 	LISP_BUILTIN_BETA,
