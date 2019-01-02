@@ -118,14 +118,14 @@ strpointer(Mach *m, lispref_t ref)
 	return m->strings.p + off;
 }
 
-static lispref_t
+lispref_t
 lispcar(Mach *m, lispref_t base)
 {
 	lispref_t *p = pointer(m, base);
 	return p[0];
 }
 
-static lispref_t
+lispref_t
 lispcdr(Mach *m, lispref_t base)
 {
 	lispref_t *p = pointer(m, base);
@@ -159,6 +159,12 @@ static int
 issymbol(Mach *m, lispref_t a)
 {
 	return reftag(a) == LISP_TAG_SYMBOL;
+}
+
+static int
+isnumber(Mach *m, lispref_t a)
+{
+	return reftag(a) == LISP_TAG_INTEGER;
 }
 
 static int
@@ -628,8 +634,8 @@ lispread(Mach *m, lispport_t port)
 	return m->ports[port].readbyte(m->ports[port].context);
 }
 
-static int
-atomprint(Mach *m, lispref_t aref, lispport_t port)
+int
+lispprint1(Mach *m, lispref_t aref, lispport_t port)
 {
 	char buf[128];
 	int tag = reftag(aref);
@@ -1056,7 +1062,7 @@ again:
 					m->reg2 = lispcar(m, m->expr);
 					m->expr = lispcdr(m, m->expr);
 					m->expr = lispcar(m, m->expr);
-					atomprint(m, m->expr, loadint(m, m->reg2));
+					lispprint1(m, m->expr, loadint(m, m->reg2));
 					m->reg2 = LISP_NIL;
 					m->value = m->expr;
 					lispreturn(m);
@@ -1070,7 +1076,49 @@ again:
 					lispgoto(m, LISP_STATE_EVAL);
 					goto again;
 				}
+			} else if(issymbol(m, head) || isnumber(m, head)){
+				// this is the accessor (getter/setter) of our "namespaces".
+				// it reaches into a lambda to get to an entry from its
+				// environment. in code this will look like this:
+				//	('field obj) -> ('field value)
+				// a field can hence be mutated with code like
+				//	(setcdr! ('field obj) newvalue)
+				// and a new object with a field n can be created as
+				//	(define obj ((lambda()
+				//		(define n 10)
+				//		(lambda())
+				//	)))
+				lispref_t beta = lispcar(m, lispcdr(m, m->expr));
+				if(beta == LISP_NIL){
+					m->value = LISP_TAG_ERROR;
+					lispreturn(m);
+					goto again;
+				}
+				lispref_t betahead = lispcar(m, beta);
+				if(reftag(betahead) != LISP_TAG_BUILTIN || refval(betahead) != LISP_BUILTIN_BETA){
+					fprintf(stderr, "symbol finding in a non-object\n");
+					m->value = LISP_TAG_ERROR;
+					lispreturn(m);
+					goto again;
+				}
 
+				lispref_t lst = lispcdr(m, lispcdr(m, beta));
+				while(lst != LISP_NIL){
+					lispref_t pair = lispcar(m, lst);
+					if(ispair(m, pair)){
+						lispref_t key = lispcar(m, pair);
+						if(key == head){
+							m->value = pair;
+							lispreturn(m);
+							goto again;
+						}
+					}
+					lst = lispcdr(m, lst);
+				}
+				fprintf(stderr, "symbol %s not found in object\n", (char *)strpointer(m, head));
+				m->value = LISP_TAG_ERROR;
+				lispreturn(m);
+				goto again;
 			} else if(ispair(m, head)){
 
 				// form is ((beta (lambda...)) args), or a continuation.
@@ -1302,6 +1350,9 @@ lispcollect(Mach *m)
 	if(m->mem.len == 0)
 		return;
 
+	// There are two "memories" within m, namely m->mem and m->copy.
+	// we create a copy of m called oldm here, and then exchange m->mem and
+	// m->copy. It's a waste of memory, but it avoids one big malloc per gc.
 	Mach oldm;
 	memcpy(&oldm, m, sizeof oldm);
 	memcpy(&m->mem, &oldm.copy, sizeof m->mem);
@@ -1343,8 +1394,6 @@ lispcollect(Mach *m)
 	m->reg0 = reg0tmp;
 	m->reg1 = reg1tmp;
 
-
-//fprintf(stderr, "."); fflush(stderr);
 	m->gclock--;
 }
 

@@ -123,3 +123,6 @@ int lisperror(Mach *m, lispref_t a);
 void lispcall(Mach *m, lispref_t ret, lispref_t inst);
 int lispstep(Mach *m);
 void lispcollect(Mach *m);
+lispref_t lispcar(Mach *m, lispref_t base);
+lispref_t lispcdr(Mach *m, lispref_t base);
+int lispprint1(Mach *m, lispref_t aref, lispport_t port);
