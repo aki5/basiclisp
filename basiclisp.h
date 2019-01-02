@@ -90,13 +90,7 @@ struct Mach {
 		lispref_t *ref;
 		size_t len;
 		size_t cap;
-	} idx;
-
-	struct {
-		lispref_t *ref;
-		size_t len;
-		size_t cap;
-	} mem;
+	} idx, mem, copy;
 
 	struct {
 		char *p;

@@ -1304,9 +1304,15 @@ lispcollect(Mach *m)
 
 	Mach oldm;
 	memcpy(&oldm, m, sizeof oldm);
-	m->mem.ref = malloc(m->mem.cap * sizeof m->mem.ref[0]);
-	memset(m->mem.ref, 0, m->mem.cap * sizeof m->mem.ref[0]);
+	memcpy(&m->mem, &oldm.copy, sizeof m->mem);
+	if(m->mem.cap != oldm.mem.cap){
+		fprintf(stderr, "resizing from %zu to %zu\n", m->mem.cap, oldm.mem.cap);
+		m->mem.cap = oldm.mem.cap;
+		m->mem.ref = realloc(m->mem.ref, m->mem.cap * sizeof m->mem.ref[0]);
+		memset(m->mem.ref, 0, m->mem.cap * sizeof m->mem.ref[0]);
+	}
 	m->mem.len = 0;
+	memcpy(&m->copy, &oldm.mem, sizeof m->copy);
 	m->gclock++;
 
 	// copy registers as roots.
@@ -1327,7 +1333,6 @@ lispcollect(Mach *m)
 	m->expr = lispcopy(m, &oldm, oldm.expr);
 	m->envr = lispcopy(m, &oldm, oldm.envr);
 	m->stack = lispcopy(m, &oldm, oldm.stack);
-
 	m->cleanenvr = lispcopy(m, &oldm, oldm.cleanenvr);
 
 	for(size_t i = 2; i < m->mem.len; i++)
@@ -1338,7 +1343,6 @@ lispcollect(Mach *m)
 	m->reg0 = reg0tmp;
 	m->reg1 = reg1tmp;
 
-	free(oldm.mem.ref);
 
 //fprintf(stderr, "."); fflush(stderr);
 	m->gclock--;
