@@ -42,15 +42,13 @@ int
 main(int argc, char *argv[])
 {
 	Mach m;
-	lispref_t list;
-	size_t i;
 
 	memset(&m, 0, sizeof m);
 	lispinit(&m);
 	lispsetport(&m, 0, (int(*)(int,void*))NULL, (int(*)(void*))getc, (int(*)(int,void*))ungetc, (void*)stdin);
 	lispsetport(&m, 1, (int(*)(int,void*))putc, (int(*)(void*))NULL, (int(*)(int,void*))NULL, (void*)stdout);
 
-	for(i = 1; i < (size_t)argc; i++){
+	for(size_t i = 1; i < (size_t)argc; i++){
 		FILE *fp = fopen(argv[i], "rb");
 		if(fp == NULL){
 			fprintf(stderr, "cannot open %s\n", argv[i]);
@@ -62,8 +60,14 @@ main(int argc, char *argv[])
 			if(lisperror(&m, m.expr))
 				break;
 			lispcall(&m, LISP_STATE_RETURN, LISP_STATE_EVAL);
-			while(lispstep(&m) == 1)
-				;
+			while(lispstep(&m) == 1){
+				printf("ext-call?");
+				for(lispref_t np = m.expr; np != LISP_NIL; np = lispcdr(&m, np)){
+					printf(" ");
+					lispprint1(&m, lispcar(&m, np), 1);
+				}
+				printf("\n");
+			}
 			m.expr = LISP_NIL;
 			m.value = LISP_NIL;
 		}
