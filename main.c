@@ -11,12 +11,21 @@
 
 typedef struct Context Context;
 typedef struct Buffer Buffer;
+typedef struct Type Type;
+
+struct Type {
+	lispapplier_t *apply;
+	lispsetter_t *set;
+	lispgetter_t *get;
+};
 
 struct Context {
 	Mach m;
 	lispref_t buffer_symbol;
 	lispref_t len_symbol;
 	lispref_t cap_symbol;
+	Type bufclass;
+	Type buftype;
 };
 
 struct Buffer {
@@ -32,17 +41,17 @@ bufget(void *ctx, void *obj, lispref_t lispkey)
 	Buffer *buf = (Buffer *)obj;
 	if(lispsymbol(&c->m, lispkey)){
 		if(lispkey == c->len_symbol){
-			return lispint(&c->m, buf->len);
+			return lispmknumber(&c->m, buf->len);
 		} else if(lispkey == c->cap_symbol){
-			return lispint(&c->m, buf->cap);
+			return lispmknumber(&c->m, buf->cap);
 		}
 	} else if(lispnumber(&c->m, lispkey)){
 		size_t i = lispgetint(&c->m, lispkey);
 		if(i >= buf->len)
-			return LISP_TAG_ERROR;
-		return lispint(&c->m, buf->buf[i]);
+			return lispmkbuiltin(&c->m, LISP_BUILTIN_ERROR);
+		return lispmknumber(&c->m, buf->buf[i]);
 	}
-	return LISP_TAG_ERROR;
+	return lispmkbuiltin(&c->m, LISP_BUILTIN_ERROR);
 }
 
 static lispref_t
@@ -58,12 +67,12 @@ bufset(void *ctx, void *obj, lispref_t lispkey, lispref_t lispval)
 	} else if(lispnumber(&c->m, lispkey)){
 		size_t i = lispgetint(&c->m, lispkey);
 		if(i >= buf->len)
-			return LISP_TAG_ERROR;
+			return lispmkbuiltin(&c->m, LISP_BUILTIN_ERROR);
 		unsigned char ch = lispgetint(&c->m, lispval);
 		buf->buf[i] = ch;
 		return lispval;
 	}
-	return LISP_TAG_ERROR;
+	return lispmkbuiltin(&c->m, LISP_BUILTIN_ERROR);
 }
 
 static lispref_t
@@ -76,15 +85,15 @@ bufnew(void *ctx, void *obj, lispref_t args)
 		fprintf(stderr, "bufalloc %zu\n", cap);
 		Buffer *buf = malloc(sizeof buf[0] + cap);
 		if(buf == NULL)
-			return LISP_TAG_ERROR;
+			return lispmkbuiltin(&c->m, LISP_BUILTIN_ERROR);
 		memset(buf, 0, sizeof buf[0] + cap);
 		buf->cap = cap;
 		buf->len = cap;
 		lispref_t extref = lispextalloc(&c->m);
-		lispextset(&c->m, extref, (void*)buf, bufnew, bufset, bufget);
+		lispextset(&c->m, extref, (void*)buf, &c->buftype);
 		return extref;
 	}
-	return LISP_TAG_ERROR;
+	return lispmkbuiltin(&c->m, LISP_BUILTIN_ERROR);
 }
 
 struct slice {
@@ -127,13 +136,17 @@ main(int argc, char *argv[])
 	lispsetport(&c.m, 0, (int(*)(int,void*))NULL, (int(*)(void*))getc, (int(*)(int,void*))ungetc, (void*)stdin);
 	lispsetport(&c.m, 1, (int(*)(int,void*))putc, (int(*)(void*))NULL, (int(*)(int,void*))NULL, (void*)stdout);
 
-	c.buffer_symbol = lispstrtosymbol(&c.m, "buffer");
-	c.len_symbol = lispstrtosymbol(&c.m, "len");
-	c.cap_symbol = lispstrtosymbol(&c.m, "cap");
-	lispref_t bufclass = lispextalloc(&c.m);
+	c.bufclass.apply = bufnew;
+	c.buftype.set = bufset;
+	c.buftype.get = bufget;
 
-	lispextset(&c.m, bufclass, NULL, bufnew, NULL, NULL);
-	lispdefine(&c.m, c.buffer_symbol, bufclass);
+	c.buffer_symbol = lispmksymbol(&c.m, "buffer");
+	c.len_symbol = lispmksymbol(&c.m, "len");
+	c.cap_symbol = lispmksymbol(&c.m, "cap");
+	lispref_t bufclass_ref = lispextalloc(&c.m);
+
+	lispextset(&c.m, bufclass_ref, NULL, &c.bufclass);
+	lispdefine(&c.m, c.buffer_symbol, bufclass_ref);
 
 	for(size_t i = 1; i < (size_t)argc; i++){
 		FILE *fp = fopen(argv[i], "rb");
@@ -148,49 +161,52 @@ main(int argc, char *argv[])
 				break;
 			lispcall(&c.m, LISP_STATE_RETURN, LISP_STATE_EVAL);
 			while(lispstep(&c.m) == 1){
+				c.m.value = lispmkbuiltin(&c.m, LISP_BUILTIN_ERROR); // default to error up front.
 				lispref_t first = lispcar(&c.m, c.m.expr);
 				if(lispextref(&c.m, first)){
-					//printf("call/ext\n");
+					// first element is an extref: it's an apply
 					lispref_t second = lispcdr(&c.m, c.m.expr);
 					void *obj;
-					lispapplier_t *apply;
-					lispextget(&c.m, first, &obj, &apply, NULL, NULL);
-					if(apply == NULL){
-						c.m.value = LISP_TAG_ERROR;
-					}
-					c.m.value = (*apply)(&c, obj, second);
+					Type *type;
+					lispextget(&c.m, first, &obj, (void**)&type);
+					if(type != NULL && type->apply != NULL)
+						c.m.value = (*type->apply)(&c, obj, second);
 				} else if(lispbuiltin(&c.m, first, LISP_BUILTIN_SET)){
+					// it's a set.. ensure form is (set! ('prop extref) value)
+					// and call setter.
 					lispref_t form = lispcdr(&c.m, c.m.expr);
 					lispref_t third = lispcdr(&c.m, form);
 					form = lispcar(&c.m, form);
-					if(form != LISP_NIL){ // should check that it's a cons
+					if(lisppair(&c.m, form)){
 						first = lispcar(&c.m, form);
 						if(lispnumber(&c.m, first) || lispsymbol(&c.m, first)){
 							lispref_t second = lispcdr(&c.m, form);
-							if(second != LISP_NIL){
+							if(lisppair(&c.m, second) && lisppair(&c.m, third)){
 								second = lispcar(&c.m, second);
-								third = lispcar(&c.m, third);
-								lispsetter_t *set;
-								void *obj;
-								lispextget(&c.m, second, &obj, NULL, &set, NULL);
-								c.m.value = (*set)(&c, obj, first, third);
-							} else {
-								c.m.value = LISP_TAG_ERROR;
+								if(lispextref(&c.m, second)){
+									third = lispcar(&c.m, third);
+									void *obj;
+									Type *type;
+									lispextget(&c.m, second, &obj, (void**)&type);
+									if(type != NULL && type->set != NULL)
+										c.m.value = (*type->set)(&c, obj, first, third);
+								}
 							}
-						} else {
-							c.m.value = LISP_TAG_ERROR;
 						}
 					}
 				} else if(lispnumber(&c.m, first) || lispsymbol(&c.m, first)){
+					// it looks like a get, ensure form is ('prop extref) and
+					// call the getter.
 					lispref_t second = lispcdr(&c.m, c.m.expr);
-					if(second != LISP_NIL){
+					if(lisppair(&c.m, second)){
 						second = lispcar(&c.m, second);
-						lispgetter_t *get;
-						void *obj;
-						lispextget(&c.m, second, &obj, NULL, NULL, &get);
-						c.m.value = (*get)(&c, obj, first);
-					} else {
-						c.m.value = LISP_TAG_ERROR;
+						if(lispextref(&c.m, second)){
+							void *obj;
+							Type *type;
+							lispextget(&c.m, second, &obj, (void**)&type);
+							if(type != NULL && type->get != NULL)
+								c.m.value = (*type->get)(&c, obj, first);
+						}
 					}
 				} else {
 					for(lispref_t np = c.m.expr; np != LISP_NIL; np = lispcdr(&c.m, np)){
@@ -199,7 +215,6 @@ main(int argc, char *argv[])
 					}
 					printf("\n");
 					fprintf(stderr, "extcall: not sure what's going on: %x\n", first);
-					c.m.value = LISP_TAG_ERROR;
 				}
 			}
 			c.m.expr = LISP_NIL;

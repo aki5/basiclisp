@@ -6,22 +6,24 @@ typedef lispref_t (lispapplier_t)(void *, void *, lispref_t);
 typedef lispref_t (lispgetter_t)(void *, void *, lispref_t);
 typedef lispref_t (lispsetter_t)(void *, void *, lispref_t, lispref_t);
 
-#define LISP_NIL (lispref_t)0
+// these are macros because enums are signed and these fiddle with the MSB.
+#define LISP_TAG_BIT ((lispref_t)1<<(8*sizeof(lispref_t)-1))
+#define	LISP_VAL_MASK ((lispref_t)LISP_TAG_BIT-1)
+#define LISP_NIL (lispref_t)(LISP_TAG_BIT>>LISP_TAG_PAIR)
+
 enum {
 	LISP_CAR_OFFSET = 0,
 	LISP_CDR_OFFSET = 1,
 
-	LISP_TAG_BITS = 3,
-	LISP_TAG_MASK = (1<<LISP_TAG_BITS)-1,
+	LISP_TOK_INTEGER = 1000,
+	LISP_TOK_SYMBOL,
+	LISP_TOK_STRING,
 
-	LISP_TAG_PAIR = 0,	// first so that NIL value of 0 is a cons
-	LISP_TAG_INTEGER,	// a 29-bit signed int posturing as a reference
-	LISP_TAG_SYMBOL,	// symbol (has a name in the string table)
-	LISP_TAG_BUILTIN,	// built-in function (enumerated below)
-	LISP_TAG_STRING,	// string literal
-	LISP_TAG_FORWARD,	// for garbage collection
-	LISP_TAG_ERROR,		// error (explanation in the string table)
-	LISP_TAG_EXTREF,	// external object
+	LISP_TAG_PAIR = 0,	// 1...... 32k cells (pairs)
+	LISP_TAG_INTEGER,	// 01..... 16k unsigned ints
+	LISP_TAG_SYMBOL,	// 001....  8k symbols (offset to the name table)
+	LISP_TAG_EXTREF,	// 0001...  4k external objects
+	LISP_TAG_BUILTIN,	// 00001..  2k built-in functions (enumerated below)
 
 	LISP_BUILTIN_IF = 0,
 	LISP_BUILTIN_BETA,
@@ -57,7 +59,11 @@ enum {
 	LISP_BUILTIN_FALSE,
 	// io
 	LISP_BUILTIN_PRINT1,
+	// error
+	LISP_BUILTIN_ERROR,
 	LISP_NUM_BUILTINS,
+
+	LISP_BUILTIN_FORWARD,	// special builtin for pointer forwarding
 
 	// states for lispstep()
 	LISP_STATE_APPLY,
@@ -108,9 +114,7 @@ struct Mach {
 	struct {
 		struct {
 			void *obj;
-			lispapplier_t *apply;
-			lispsetter_t *set;
-			lispgetter_t *get;
+			void *type;
 		} *p;
 		size_t len;
 		size_t cap;
@@ -138,7 +142,7 @@ void lispinit(Mach *m);
 int lispsetport(Mach *m, lispport_t port, int (*writebyte)(int ch, void *ctx), int (*readbyte)(void *ctx), int (*unreadbyte)(int ch, void *ctx), void *ctx);
 lispref_t lispparse(Mach *m, int justone);
 int lisperror(Mach *m, lispref_t a);
-void lispcall(Mach *m, lispref_t ret, lispref_t inst);
+void lispcall(Mach *m, int ret, int inst);
 int lispstep(Mach *m);
 void lispcollect(Mach *m);
 lispref_t lispcar(Mach *m, lispref_t base);
@@ -146,18 +150,18 @@ lispref_t lispcdr(Mach *m, lispref_t base);
 int lispprint1(Mach *m, lispref_t aref, lispport_t port);
 lispref_t *lispregister(Mach *m, lispref_t val);
 void lisprelease(Mach *m, lispref_t *reg);
-
 int lispsymbol(Mach *m, lispref_t a);
 int lispnumber(Mach *m, lispref_t a);
 int lispbuiltin(Mach *mach, lispref_t a, int builtin);
 int lispextref(Mach *m, lispref_t a);
 int lisppair(Mach *m, lispref_t a);
-lispref_t lispstrtosymbol(Mach *m, char *str);
+lispref_t lispmksymbol(Mach *m, char *str);
+lispref_t lispmkbuiltin(Mach *m, int val);
 void lispdefine(Mach *m, lispref_t sym, lispref_t val);
 
 lispref_t lispextalloc(Mach *m);
-int lispextset(Mach *m, lispref_t ext, void *obj, lispapplier_t *apply, lispsetter_t *set, lispgetter_t *get);
-int lispextget(Mach *m, lispref_t ext, void **obj, lispapplier_t **apply, lispsetter_t **set, lispgetter_t **get);
+int lispextset(Mach *m, lispref_t ext, void *obj, void *type);
+int lispextget(Mach *m, lispref_t ext, void **obj, void **type);
 
 int lispgetint(Mach *m, lispref_t num);
-lispref_t lispint(Mach *m, int);
+lispref_t lispmknumber(Mach *m, int);
