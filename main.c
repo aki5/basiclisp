@@ -79,7 +79,7 @@ static LispRef
 bufferNew(void *ctx, void *obj, LispRef args)
 {
 	Context *c = (Context *)ctx;
-	if(lispIsPairNotNull(&c->m, args) && lispIsNumber(&c->m, lispCar(&c->m, args))){
+	if(lispIsPair(&c->m, args) && lispIsNumber(&c->m, lispCar(&c->m, args))){
 		LispRef lispcap = lispCar(&c->m, args);
 		size_t cap = lispGetInt(&c->m, lispcap);
 		fprintf(stderr, "bufalloc %zu\n", cap);
@@ -177,11 +177,11 @@ main(int argc, char *argv[])
 					LispRef form = lispCdr(&c.m, c.m.expr);
 					LispRef third = lispCdr(&c.m, form);
 					form = lispCar(&c.m, form);
-					if(lispIsPairNotNull(&c.m, form)){
+					if(lispIsPair(&c.m, form)){
 						first = lispCar(&c.m, form);
 						if(lispIsNumber(&c.m, first) || lispIsSymbol(&c.m, first)){
 							LispRef second = lispCdr(&c.m, form);
-							if(lispIsPairNotNull(&c.m, second) && lispIsPairNotNull(&c.m, third)){
+							if(lispIsPair(&c.m, second) && lispIsPair(&c.m, third)){
 								second = lispCar(&c.m, second);
 								if(lispIsExtRef(&c.m, second)){
 									third = lispCar(&c.m, third);
@@ -198,7 +198,7 @@ main(int argc, char *argv[])
 					// it looks like a get, ensure form is ('prop extref) and
 					// call the getter.
 					LispRef second = lispCdr(&c.m, c.m.expr);
-					if(lispIsPairNotNull(&c.m, second)){
+					if(lispIsPair(&c.m, second)){
 						second = lispCar(&c.m, second);
 						if(lispIsExtRef(&c.m, second)){
 							void *obj;

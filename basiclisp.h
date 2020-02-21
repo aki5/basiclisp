@@ -154,7 +154,7 @@ int lispIsSymbol(LispMachine *m, LispRef a);
 int lispIsNumber(LispMachine *m, LispRef a);
 int lispIsBuiltin(LispMachine *mach, LispRef a, int builtin);
 int lispIsExtRef(LispMachine *m, LispRef a);
-int lispIsPairNotNull(LispMachine *m, LispRef a);
+int lispIsPair(LispMachine *m, LispRef a);
 LispRef lispSymbol(LispMachine *m, char *str);
 LispRef lispBuiltin(LispMachine *m, int val);
 void lispDefine(LispMachine *m, LispRef sym, LispRef val);

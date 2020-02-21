@@ -224,13 +224,13 @@ lispIsExtRef(LispMachine *mach, LispRef a)
 }
 
 int
-lispIsPair(LispMachine *m, LispRef a)
+lispIsPairOrNull(LispMachine *m, LispRef a)
 {
 	return reftag(a) == LISP_TAG_PAIR;
 }
 
 int
-lispIsPairNotNull(LispMachine *m, LispRef a)
+lispIsPair(LispMachine *m, LispRef a)
 {
 	return reftag(a) == LISP_TAG_PAIR && a != LISP_NIL;
 }
@@ -815,7 +815,7 @@ again:
 			LispRef lst = m->envr;
 			while(lst != LISP_NIL){
 				LispRef pair = lispCar(m, lst);
-				if(lispIsPairNotNull(m, pair)){
+				if(lispIsPair(m, pair)){
 					LispRef key = lispCar(m, pair);
 					if(key == m->expr){
 						m->value = lispCdr(m, pair);
@@ -830,7 +830,7 @@ again:
 			}
 			lispReturn(m);
 			goto again;
-		} else if(lispIsPairNotNull(m, m->expr)){
+		} else if(lispIsPair(m, m->expr)){
 			// form is (something), so at least we are applying something.
 			// handle special forms (quote, lambda, beta, if, define) before
 			// evaluating args.
@@ -880,7 +880,7 @@ again:
 					LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
 					LispRef *val = lispRegister(m, lispCdr(m, *sym));
 					*sym = lispCar(m, *sym);
-					if(lispIsPairNotNull(m, *sym)){
+					if(lispIsPair(m, *sym)){
 						// scheme shorthand: (define (name args...) body1 body2...).
 						LispRef *tmp = lispRegister(m, lispCons(m, lispCdr(m, *sym), *val));
 						*val = lispCons(m, lispBuiltin(m, LISP_BUILTIN_LAMBDA), *tmp);
@@ -914,7 +914,7 @@ again:
 					LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
 					LispRef *val = lispRegister(m, lispCdr(m, *sym));
 					*sym = lispCar(m, *sym);
-					if(lispIsPairNotNull(m, *sym)){
+					if(lispIsPair(m, *sym)){
 						// setter for our object system: (set! ('field obj) value).
 						// since set is a special form, we must explicitly evaluate
 						// the list elements (but not call apply)
@@ -940,7 +940,7 @@ again:
 					// restore sym from stack, construct (sym . val)
 					sym = lispRegister(m, lispPop(m));
 					LispRef lst;
-					if(lispIsPairNotNull(m, *sym)){
+					if(lispIsPair(m, *sym)){
 						LispRef beta = lispCar(m, lispCdr(m, *sym));
 						if(lispIsExtRef(m, beta)){
 							// it's (10 buf) form, ie. buffer indexing
@@ -972,7 +972,7 @@ again:
 					LispRef pair;
 					while(lst != LISP_NIL){
 						pair = lispCar(m, lst);
-						if(lispIsPairNotNull(m, pair)){
+						if(lispIsPair(m, pair)){
 							LispRef key = lispCar(m, pair);
 							if(key == *sym)
 								break;
@@ -1002,7 +1002,7 @@ again:
 						LispRef env = m->envr;
 						while(env != LISP_NIL){
 							LispRef pair = lispCar(m, env);
-							if(lispIsPairNotNull(m, pair)){
+							if(lispIsPair(m, pair)){
 								LispRef key = lispCar(m, pair);
 								if(key == var){
 									*newenvr = lispCons(m, pair, *newenvr);
@@ -1110,7 +1110,7 @@ again:
 				} else if(blt == LISP_BUILTIN_ISPAIR){ // (pair? ...)
 					m->expr = lispCdr(m, m->expr);
 					m->expr = lispCar(m, m->expr);
-					if(lispIsPairNotNull(m, m->expr))
+					if(lispIsPair(m, m->expr))
 						m->value =  lispBuiltin(m, LISP_BUILTIN_TRUE);
 					else
 						m->value =  lispBuiltin(m, LISP_BUILTIN_FALSE);
@@ -1130,7 +1130,7 @@ again:
 								m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 								goto eqdone;
 							}
-						} else if(lispIsPair(m, ref0) && lispIsPair(m, ref)){
+						} else if(lispIsPairOrNull(m, ref0) && lispIsPairOrNull(m, ref)){
 							if(ref0 != ref){
 								m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 								goto eqdone;
@@ -1270,7 +1270,7 @@ again:
 					LispRef lst = lispCdr(m, lispCdr(m, beta));
 					while(lst != LISP_NIL){
 						LispRef pair = lispCar(m, lst);
-						if(lispIsPairNotNull(m, pair)){
+						if(lispIsPair(m, pair)){
 							LispRef key = lispCar(m, pair);
 							if(key == head){
 								m->value = lispCdr(m, pair);
@@ -1291,7 +1291,7 @@ again:
 					goto again;
 				}
 
-			} else if(lispIsPairNotNull(m, head)){
+			} else if(lispIsPair(m, head)){
 
 				// form is ((beta (lambda...)) args), or a continuation.
 				// ((beta (lambda args . body) . envr) args) -> (body),
@@ -1314,7 +1314,7 @@ again:
 					// ((continue . stack) return-value)
 					m->stack = lispCdr(m, beta);
 					m->value = lispCdr(m, m->expr);
-					if(lispIsPairNotNull(m, m->value))
+					if(lispIsPair(m, m->value))
 						m->value = lispCar(m, m->value);
 					lispReturn(m);
 					goto again;
@@ -1325,11 +1325,11 @@ again:
 
 					LispRef *argnames = lispRegister(m, lispCdr(m, lambda));
 					LispRef *args = lispRegister(m, lispCdr(m, m->expr)); // args = cdr expr
-					if(lispIsPairNotNull(m, *argnames)){
+					if(lispIsPair(m, *argnames)){
 						// loop over argnames and args simultaneously, cons
 						// them as pairs to the environment
 						*argnames = lispCar(m, *argnames);
-						while(lispIsPairNotNull(m, *argnames) && lispIsPairNotNull(m, *args)){
+						while(lispIsPair(m, *argnames) && lispIsPair(m, *args)){
 							LispRef *pair = lispRegister(m, lispCons(m,
 								lispCar(m, *argnames),
 								lispCar(m, *args)));
@@ -1343,7 +1343,7 @@ again:
 					// scheme-style variadic: argnames list terminates in a
 					// symbol instead of LISP_NIL, associate the rest of argslist
 					// with it. notice: (lambda x (body)) also lands here.
-					if(*argnames != LISP_NIL && !lispIsPairNotNull(m, *argnames)){
+					if(*argnames != LISP_NIL && !lispIsPair(m, *argnames)){
 						LispRef *pair = lispRegister(m, lispCons(m, *argnames, *args));
 						m->envr = lispCons(m, *pair, m->envr);
 						lispRelease(m, pair);
@@ -1425,7 +1425,7 @@ again:
 			// load expr-cell to reg3.
 			m->reg3 = lispCar(m, *state); // expr-cell = car(state)
 listeval_first:
-			if(lispIsPairNotNull(m, m->reg3)){
+			if(lispIsPair(m, m->reg3)){
 				// load new expr from expr-cell and set expr-cell to next expr.
 				m->expr = lispCar(m, m->reg3); // expr = (car expr-cell)
 				m->reg3 = lispCdr(m, m->reg3); // reg3 = (cdr expr-cell)
@@ -1495,7 +1495,7 @@ listeval_first:
 static LispRef
 lispCopy(LispMachine *newm, LispMachine *oldm, LispRef ref)
 {
-	if(lispIsPair(oldm, ref)){
+	if(lispIsPairOrNull(oldm, ref)){
 		if(ref == LISP_NIL)
 			return LISP_NIL;
 		if(lispIsBuiltin(oldm, lispCar(oldm, ref), LISP_BUILTIN_FORWARD))
