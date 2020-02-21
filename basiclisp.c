@@ -36,7 +36,7 @@ static char *bltnames[] = {
 [LISP_BUILTIN_BITNOT] = "bitwise-not",
 [LISP_BUILTIN_REM] = "remainder",
 [LISP_BUILTIN_ISPAIR] = "pair?",
-[LISP_BUILTIN_ISEQ] = "equal?",
+[LISP_BUILTIN_ISEQUAL] = "equal?",
 [LISP_BUILTIN_ISLESS] = "less?",
 [LISP_BUILTIN_ISERROR] = "error?",
 [LISP_BUILTIN_TRUE] = "#t",
@@ -1116,7 +1116,7 @@ again:
 						m->value =  lispBuiltin(m, LISP_BUILTIN_FALSE);
 					lispReturn(m);
 					goto again;
-				} else if(blt == LISP_BUILTIN_ISEQ){ // (eq? ...)
+				} else if(blt == LISP_BUILTIN_ISEQUAL){ // (equal? ...)
 					m->expr = lispCdr(m, m->expr);
 					LispRef ref0 = lispCar(m, m->expr);
 					m->expr = lispCdr(m, m->expr);
@@ -1136,7 +1136,7 @@ again:
 								goto eqdone;
 							}
 						} else {
-							fprintf(stderr, "eq?: unsupported types %d %d\n", reftag(ref0), reftag(ref));
+							fprintf(stderr, "equal?: unsupported types %d %d\n", reftag(ref0), reftag(ref));
 							m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 							lispReturn(m);
 							goto again;

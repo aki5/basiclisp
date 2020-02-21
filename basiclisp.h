@@ -19,11 +19,11 @@ enum {
 	LISP_TOK_SYMBOL,
 	LISP_TOK_STRING,
 
-	LISP_TAG_PAIR = 0,	// 1...... 32k cells (pairs)
-	LISP_TAG_INTEGER,	// 01..... 16k unsigned ints
-	LISP_TAG_EXTREF,	// 001....  8k external objects
-	LISP_TAG_SYMBOL,	// 0001...  4k symbols (offset to the name table)
-	LISP_TAG_BUILTIN,	// 00001..  2k built-in functions (enumerated below)
+	LISP_TAG_PAIR = 0,	// 1...... 32k (2B) cells (pairs)
+	LISP_TAG_INTEGER,	// 01..... 16k (1B) unsigned ints
+	LISP_TAG_EXTREF,	// 001....  8k (512M) external objects
+	LISP_TAG_SYMBOL,	// 0001...  4k (256M) symbols (offset to the name table)
+	LISP_TAG_BUILTIN,	// 00001..  2k (128M) built-in functions (enumerated below)
 
 	LISP_BUILTIN_IF = 0,
 	LISP_BUILTIN_BETA,
@@ -52,7 +52,7 @@ enum {
 	LISP_BUILTIN_REM,
 	// predicates
 	LISP_BUILTIN_ISPAIR,
-	LISP_BUILTIN_ISEQ,
+	LISP_BUILTIN_ISEQUAL,
 	LISP_BUILTIN_ISLESS,
 	LISP_BUILTIN_ISERROR,
 	LISP_BUILTIN_TRUE,
