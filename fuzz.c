@@ -52,7 +52,7 @@ LLVMFuzzerTestOneInput(const uint8_t *buf, size_t len)
 	m.expr = lispparse(&m, 1);
 	if(lisperror(&m, m.expr))
 		return -1;
-	lispgc(&m);
+	//lispgc(&m);
 #if 0
 	lispcall(&m, INS_RETURN, INS_EVAL);
 	while(lispstep(&m) == 1){

@@ -45,25 +45,25 @@ static char *bltnames[] = {
 [LISP_BUILTIN_ERROR] = "error",
 };
 
-lispref_t *
-lispregister(Mach *m, lispref_t val)
+LispRef *
+lispRegister(LispMachine *m, LispRef val)
 {
 	uint32_t reguse = m->reguse;
 	for(size_t i = 0; i < nelem(m->regs); i++){
 		if((reguse & (1<<i)) == 0){
-			lispref_t *regp = &m->regs[i];
+			LispRef *regp = &m->regs[i];
 			m->reguse = reguse | (1<<i);
 			*regp = val;
 			return regp;
 		}
 	}
-	fprintf(stderr, "lispregister: ran out of registers\n");
+	fprintf(stderr, "lispRegister: ran out of registers\n");
 	abort();
 	return NULL;
 }
 
 void
-lisprelease(Mach *m, lispref_t *regp)
+lispRelease(LispMachine *m, LispRef *regp)
 {
 	size_t i = regp - m->regs;
 	if(i >= nelem(m->regs))
@@ -72,80 +72,45 @@ lisprelease(Mach *m, lispref_t *regp)
 	m->reguse &= ~(1<<i);
 }
 
-#if 0
-static lispref_t
+static LispRef
 mkref(int val, int tag)
 {
-	return ((val<<LISP_TAG_BITS)|(tag&LISP_TAG_MASK));
-}
-
-static int
-reftag(lispref_t ref)
-{
-	return ref & LISP_TAG_MASK;
-}
-
-static intptr_t
-refval(lispref_t ref)
-{
-	return (intptr_t)ref >> LISP_TAG_BITS;
-}
-
-static size_t
-urefval(lispref_t ref)
-{
-	return ref >> LISP_TAG_BITS;
-}
-#else
-static lispref_t
-mkref(int val, int tag)
-{
-	lispref_t ref = LISP_TAG_BIT >> tag;
+	LispRef ref = LISP_TAG_BIT >> tag;
 	return ref | ((ref - 1) & val);
 }
 
 static int
-reftag(lispref_t ref)
+reftag(LispRef ref)
 {
-#if 1
-	lispref_t nlz;
+	LispRef nlz;
 	__asm__("lzcnt %[ref], %[nlz]"
 		: [nlz]"=r"(nlz)
 		: [ref]"r"(ref)
 		: "cc"
 	);
 	return (int)nlz;
-#else
-	for(int i = 0; i < 8; i++){
-		lispref_t tmp = ref + (LISP_TAG_BIT >> i);
-		if(tmp < ref)
-			return i;
-		ref = tmp;
-	}
-	return -1;
-#endif
 }
 
 static intptr_t
-refval(lispref_t ref)
+refval(LispRef ref)
 {
 	return (LISP_VAL_MASK >> reftag(ref)) & ref;
 }
 
 static size_t
-urefval(lispref_t ref)
+urefval(LispRef ref)
 {
 	return (LISP_VAL_MASK >> reftag(ref)) & ref;
 }
-#endif
-lispref_t
-lispmkbuiltin(Mach *m, int val)
+
+LispRef
+lispBuiltin(LispMachine *m, int val)
 {
 	return mkref(val, LISP_TAG_BUILTIN);
 }
 
-static lispref_t *
-pointer(Mach *m, lispref_t ref)
+static LispRef *
+pointer(LispMachine *m, LispRef ref)
 {
 	size_t off = urefval(ref);
 	if(off <= 0 || off >= m->mem.len){
@@ -156,7 +121,7 @@ pointer(Mach *m, lispref_t ref)
 }
 
 static char *
-strpointer(Mach *m, lispref_t ref)
+strpointer(LispMachine *m, LispRef ref)
 {
 	size_t off = urefval(ref);
 	if(off <= 0 || off >= m->strings.len){
@@ -166,114 +131,114 @@ strpointer(Mach *m, lispref_t ref)
 	return m->strings.p + off;
 }
 
-lispref_t
-lispcar(Mach *m, lispref_t base)
+static LispRef
+lispSetCar(LispMachine *m, LispRef base, LispRef obj)
 {
-	lispref_t *p = pointer(m, base);
-	return p[LISP_CAR_OFFSET];
-}
-
-lispref_t
-lispcdr(Mach *m, lispref_t base)
-{
-	lispref_t *p = pointer(m, base);
-	return p[LISP_CDR_OFFSET];
-}
-
-static lispref_t
-lispsetcar(Mach *m, lispref_t base, lispref_t obj)
-{
-	lispref_t *p = pointer(m, base);
+	LispRef *p = pointer(m, base);
 	p[LISP_CAR_OFFSET] = obj;
 	return obj;
 }
 
-static lispref_t
-lispsetcdr(Mach *m, lispref_t base, lispref_t obj)
+static LispRef
+lispSetCdr(LispMachine *m, LispRef base, LispRef obj)
 {
-	lispref_t *p = pointer(m, base);
+	LispRef *p = pointer(m, base);
 	p[LISP_CDR_OFFSET] = obj;
 	return obj;
 }
 
 static void
-lispmemset(lispref_t *mem, lispref_t val, size_t len)
+lispMemSet(LispRef *mem, LispRef val, size_t len)
 {
 	for(size_t i = 0; i < len; i++)
 		mem[i] = val;
 }
 
 static int
-isatom(Mach *m, lispref_t a)
+lispIsAtom(LispMachine *m, LispRef a)
 {
 	int tag = reftag(a);
 	return tag != LISP_TAG_SYMBOL && tag != LISP_TAG_PAIR;
 }
 
+LispRef
+lispCar(LispMachine *m, LispRef base)
+{
+	LispRef *p = pointer(m, base);
+	return p[LISP_CAR_OFFSET];
+}
+
+LispRef
+lispCdr(LispMachine *m, LispRef base)
+{
+	LispRef *p = pointer(m, base);
+	return p[LISP_CDR_OFFSET];
+}
+
 int
-lispsymbol(Mach *m, lispref_t a)
+lispIsSymbol(LispMachine *m, LispRef a)
 {
 	return reftag(a) == LISP_TAG_SYMBOL;
 }
 
 int
-lispnumber(Mach *m, lispref_t a)
+lispIsNumber(LispMachine *m, LispRef a)
 {
 	return reftag(a) == LISP_TAG_INTEGER;
 }
 
 int
-lispgetint(Mach *m, lispref_t ref)
+lispGetInt(LispMachine *m, LispRef ref)
 {
-	if(lispnumber(m, ref))
+	if(lispIsNumber(m, ref))
 		return refval(ref);
 	abort();
 	return -1;
 }
 
 int
-lispbuiltin1(Mach *m, lispref_t ref)
+lispIsBuiltinTag(LispMachine *m, LispRef ref)
 {
 	return reftag(ref) == LISP_TAG_BUILTIN;
 }
 
 int
-lispgetbuiltin(Mach *m, lispref_t ref)
+lispGetBuiltin(LispMachine *m, LispRef ref)
 {
-	if(lispbuiltin1(m, ref))
+	if(lispIsBuiltinTag(m, ref))
 		return urefval(ref);
 	abort();
 	return -1;
 }
 
 int
-lispbuiltin(Mach *m, lispref_t ref, int builtin)
+lispIsBuiltin(LispMachine *m, LispRef ref, int builtin)
 {
-	return lispbuiltin1(m, ref) && lispgetbuiltin(m, ref) == builtin;
+	return lispIsBuiltinTag(m, ref) && lispGetBuiltin(m, ref) == builtin;
 }
 
 int
-lispextref(Mach *mach, lispref_t a)
+lispIsExtRef(LispMachine *mach, LispRef a)
 {
 	return reftag(a) == LISP_TAG_EXTREF;
 }
 
 int
-lispispair(Mach *m, lispref_t a)
+lispIsPair(LispMachine *m, LispRef a)
 {
 	return reftag(a) == LISP_TAG_PAIR;
 }
 
 int
-lisppair(Mach *m, lispref_t a)
+lispIsPairNotNull(LispMachine *m, LispRef a)
 {
 	return reftag(a) == LISP_TAG_PAIR && a != LISP_NIL;
 }
 
 int
-lisperror(Mach *m, lispref_t a)
+lispIsError(LispMachine *m, LispRef a)
 {
-	return lispbuiltin(m, a, LISP_BUILTIN_ERROR);
+	return lispIsBuiltin(m, a, LISP_BUILTIN_ERROR);
 }
 
 static int
@@ -322,7 +287,7 @@ isnumchar(int c)
 }
 
 static void
-tokappend(Mach *m, int ch)
+tokappend(LispMachine *m, int ch)
 {
 	if(m->toklen == m->tokcap){
 		m->tokcap = (m->tokcap == 0) ? 256 : 2*m->tokcap;
@@ -338,13 +303,13 @@ tokappend(Mach *m, int ch)
 }
 
 static void
-tokclear(Mach *m)
+tokclear(LispMachine *m)
 {
 	m->toklen = 0;
 }
 
 static int
-lex(Mach *m)
+lex(LispMachine *m)
 {
 	int isinteger, ishex;
 	int ch, peekc;
@@ -470,8 +435,8 @@ nextpow2(size_t v)
 	return v + 1;
 }
 
-static lispref_t
-allocsymbol(Mach *m, char *str)
+static LispRef
+lispAllocSymbol(LispMachine *m, char *str)
 {
 	// don't return nil by accident
 	if(m->strings.len == 0)
@@ -481,27 +446,27 @@ allocsymbol(Mach *m, char *str)
 		m->strings.cap = nextpow2(m->strings.len+slen);
 		void *p = realloc(m->strings.p, m->strings.cap * sizeof m->strings.p[0]);
 		if(p == NULL){
-			fprintf(stderr, "allocsymbol: realloc failed\n");
+			fprintf(stderr, "lispAllocSymbol: realloc failed\n");
 			abort();
 		}
 		m->strings.p = p;
 		memset(m->strings.p + m->strings.len, 0, m->strings.cap - m->strings.len);
 	}
-	lispref_t ref = mkref(m->strings.len, LISP_TAG_SYMBOL);
+	LispRef ref = mkref(m->strings.len, LISP_TAG_SYMBOL);
 	memcpy(m->strings.p + m->strings.len, str, slen);
 	m->strings.len += slen;
 	return ref;
 }
 
-static lispref_t
-allocpair(Mach *m)
+static LispRef
+lispAllocate(LispMachine *m)
 {
-	lispref_t ref;
+	LispRef ref;
 	size_t num = 2;
 	int didgc = 0;
 	// first, try gc.
 	if(!m->gclock && (m->mem.cap - m->mem.len) < num){
-		lispcollect(m);
+		lispCollect(m);
 		didgc = 1;
 	}
 recheck:
@@ -509,11 +474,11 @@ recheck:
 		m->mem.cap = (m->mem.cap == 0) ? 256 : 2*m->mem.cap;
 		void *p = realloc(m->mem.ref, m->mem.cap * sizeof m->mem.ref[0]);
 		if(p == NULL){
-			fprintf(stderr, "allocpair: realloc failed (after gc)\n");
+			fprintf(stderr, "lispAllocate: realloc failed (after gc)\n");
 			abort();
 		}
 		m->mem.ref = p;
-		lispmemset(m->mem.ref + m->mem.len, LISP_NIL, m->mem.cap - m->mem.len);
+		lispMemSet(m->mem.ref + m->mem.len, LISP_NIL, m->mem.cap - m->mem.len);
 		goto recheck;
 	}
 	// never return LISP_NIL by accident.
@@ -528,8 +493,8 @@ recheck:
 		exit(1);
 	}
 	m->mem.len += num;
-	lispsetcar(m, ref, LISP_NIL);
-	lispsetcdr(m, ref, LISP_NIL);
+	lispSetCar(m, ref, LISP_NIL);
+	lispSetCdr(m, ref, LISP_NIL);
 	return ref;
 }
 
@@ -546,12 +511,12 @@ fnv32a(char *str, uint32_t hval)
 }
 
 static int
-idxinsert1(Mach *m, uint32_t hash, lispref_t ref)
+indexInsert1(LispMachine *m, uint32_t hash, LispRef ref)
 {
 	size_t i, off;
 
 	for(i = 0; i < m->idx.cap; i++){
-		lispref_t nref;
+		LispRef nref;
 		off = (hash + i) & (m->idx.cap - 1);
 		nref = m->idx.ref[off];
 		if(nref == LISP_NIL){
@@ -564,12 +529,12 @@ idxinsert1(Mach *m, uint32_t hash, lispref_t ref)
 }
 
 static int
-idxinsert(Mach *m, uint32_t hash, lispref_t ref)
+indexInsert(LispMachine *m, uint32_t hash, LispRef ref)
 {
 	size_t i;
 
 	if(3*(m->idx.len/2) >= m->idx.cap){
-		lispref_t *old;
+		LispRef *old;
 		size_t oldcap;
 
 		old = m->idx.ref;
@@ -577,30 +542,30 @@ idxinsert(Mach *m, uint32_t hash, lispref_t ref)
 
 		m->idx.cap = m->idx.cap < 16 ? 16 : 2*m->idx.cap;
 		m->idx.ref = malloc(m->idx.cap * sizeof m->idx.ref[0]);
-		lispmemset(m->idx.ref, LISP_NIL, m->idx.cap);
+		lispMemSet(m->idx.ref, LISP_NIL, m->idx.cap);
 		m->idx.len = 0;
 		if(old != NULL){
 			for(i = 0; i < oldcap; i++){
-				lispref_t oldref = old[i];
+				LispRef oldref = old[i];
 				if(oldref != LISP_NIL){
 					uint32_t oldhash;
 					oldhash = fnv32a((char *)strpointer(m, oldref), 0);
-					if(idxinsert1(m, oldhash, oldref) == -1)
+					if(indexInsert1(m, oldhash, oldref) == -1)
 						abort();
 				}
 			}
 			free(old);
 		}
 	}
-	if(idxinsert1(m, hash, ref) == -1)
+	if(indexInsert1(m, hash, ref) == -1)
 		abort();
 	return 0;
 }
 
-static lispref_t
-idxlookup(Mach *m, uint32_t hash, char *str)
+static LispRef
+indexLookup(LispMachine *m, uint32_t hash, char *str)
 {
-	lispref_t ref;
+	LispRef ref;
 	size_t i, off;
 
 	for(i = 0; i < m->idx.cap; i++){
@@ -615,46 +580,46 @@ idxlookup(Mach *m, uint32_t hash, char *str)
 	return LISP_NIL;
 }
 
-lispref_t
-lispmknumber(Mach *m, int v)
+LispRef
+lispNumber(LispMachine *m, int v)
 {
-	lispref_t ref = mkref(v, LISP_TAG_INTEGER);
+	LispRef ref = mkref(v, LISP_TAG_INTEGER);
 	if((int)refval(ref) == v)
 		return ref;
-	fprintf(stderr, "lispmknumber: integer overflow %d\n", v);
+	fprintf(stderr, "lispNumber: integer overflow %d\n", v);
 	abort();
 }
 
-static lispref_t
-lispcons(Mach *m, lispref_t a, lispref_t d)
+static LispRef
+lispCons(LispMachine *m, LispRef a, LispRef d)
 {
-	lispref_t ref;
-	lispref_t *areg = lispregister(m, a);
-	lispref_t *dreg = lispregister(m, d);
-	ref = allocpair(m);
-	lispsetcar(m, ref, *areg);
-	lispsetcdr(m, ref, *dreg);
-	lisprelease(m, areg);
-	lisprelease(m, dreg);
+	LispRef ref;
+	LispRef *areg = lispRegister(m, a);
+	LispRef *dreg = lispRegister(m, d);
+	ref = lispAllocate(m);
+	lispSetCar(m, ref, *areg);
+	lispSetCdr(m, ref, *dreg);
+	lispRelease(m, areg);
+	lispRelease(m, dreg);
 	return ref;
 }
 
-lispref_t
-lispmksymbol(Mach *m, char *str)
+LispRef
+lispSymbol(LispMachine *m, char *str)
 {
-	lispref_t ref;
+	LispRef ref;
 	uint32_t hash = fnv32a(str, 0);
-	if((ref = idxlookup(m, hash, str)) == LISP_NIL){
-		ref = allocsymbol(m, str);
-		idxinsert(m, hash, ref);
+	if((ref = indexLookup(m, hash, str)) == LISP_NIL){
+		ref = lispAllocSymbol(m, str);
+		indexInsert(m, hash, ref);
 	}
 	return ref;
 }
 
-lispref_t
-lispparse(Mach *m, int justone)
+LispRef
+lispParse(LispMachine *m, int justone)
 {
-	lispref_t list = LISP_NIL, prev = LISP_NIL, cons, nval;
+	LispRef list = LISP_NIL, prev = LISP_NIL, cons, nval;
 	int ltok;
 	int dot = 0;
 
@@ -664,72 +629,72 @@ m->gclock++;
 		switch(ltok){
 		default:
 			//fprintf(stderr, "unknown token %d: '%c' '%s'\n", ltok, ltok, m->tok);
-			list = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
+			list = lispBuiltin(m, LISP_BUILTIN_ERROR);
 			goto done;
 		case ')':
 			goto done;
 		case '(':
-			nval = lispparse(m, 0);
+			nval = lispParse(m, 0);
 			goto append;
 		case '\'':
-			nval = lispparse(m, 1);
-			nval = lispcons(m, lispmkbuiltin(m, LISP_BUILTIN_QUOTE), lispcons(m, nval, LISP_NIL));
+			nval = lispParse(m, 1);
+			nval = lispCons(m, lispBuiltin(m, LISP_BUILTIN_QUOTE), lispCons(m, nval, LISP_NIL));
 			goto append;
 		case '.':
 			dot++;
 			break;
 		case ',':
 			//fprintf(stderr, "TODO: backquote not implemented yet\n");
-			list = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
+			list = lispBuiltin(m, LISP_BUILTIN_ERROR);
 			goto done;
 		case LISP_TOK_INTEGER:
-			nval = lispmknumber(m, strtol(m->tok, NULL, 0));
+			nval = lispNumber(m, strtol(m->tok, NULL, 0));
 			goto append;
 		case LISP_TOK_STRING:
-			nval = lispcons(m, lispmkbuiltin(m, LISP_BUILTIN_QUOTE),
-				lispcons(m, lispmksymbol(m, m->tok),
+			nval = lispCons(m, lispBuiltin(m, LISP_BUILTIN_QUOTE),
+				lispCons(m, lispSymbol(m, m->tok),
 				LISP_NIL));
 			goto append;
 		case LISP_TOK_SYMBOL:
-			nval = lispmksymbol(m, m->tok);
+			nval = lispSymbol(m, m->tok);
 		append:
 			if(justone){
 				list = nval;
 				goto done;
 			}
 			if(dot == 0){
-				cons = lispcons(m, nval, LISP_NIL);
+				cons = lispCons(m, nval, LISP_NIL);
 				if(prev != LISP_NIL)
-					lispsetcdr(m, prev, cons);
+					lispSetCdr(m, prev, cons);
 				else
 					list = cons;
 				prev = cons;
 			} else if(dot == 1){
 				if(prev != LISP_NIL){
-					lispsetcdr(m, prev, nval);
+					lispSetCdr(m, prev, nval);
 					dot++;
 				} else {
 					//fprintf(stderr, "malformed s-expression, bad use of '.'\n");
-					list = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
+					list = lispBuiltin(m, LISP_BUILTIN_ERROR);
 					goto done;
 				}
 			} else {
 				//fprintf(stderr, "malformed s-expression, bad use of '.'\n");
-				list = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
+				list = lispBuiltin(m, LISP_BUILTIN_ERROR);
 				goto done;
 			}
 			break;
 		}
 	}
 	if(justone && ltok == -1)
-		list = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
+		list = lispBuiltin(m, LISP_BUILTIN_ERROR);
 done:
 m->gclock--;
 	return list;
 }
 
 static int
-lispwrite(Mach *m, lispport_t port, unsigned char *buf, size_t len)
+lispWrite(LispMachine *m, LispPort port, unsigned char *buf, size_t len)
 {
 	for(size_t i = 0; i < len; i++)
 		if(m->ports[port].writebyte(buf[i], m->ports[port].context) == -1)
@@ -738,13 +703,13 @@ lispwrite(Mach *m, lispport_t port, unsigned char *buf, size_t len)
 }
 
 static int
-lispread(Mach *m, lispport_t port)
+lispRead(LispMachine *m, LispPort port)
 {
 	return m->ports[port].readbyte(m->ports[port].context);
 }
 
 int
-lispprint1(Mach *m, lispref_t aref, lispport_t port)
+lispPrint1(LispMachine *m, LispRef aref, LispPort port)
 {
 	char buf[128];
 	int tag = reftag(aref);
@@ -774,332 +739,332 @@ lispprint1(Mach *m, lispref_t aref, lispport_t port)
 		snprintf(buf, sizeof buf, "%s", strpointer(m, aref));
 		break;
 	}
-	lispwrite(m, port, (unsigned char *)buf, strlen(buf));
+	lispWrite(m, port, (unsigned char *)buf, strlen(buf));
 	return tag;
 }
 
-static lispref_t
-lisppush(Mach *m, lispref_t val)
+static LispRef
+lispPush(LispMachine *m, LispRef val)
 {
-	m->stack = lispcons(m, val, m->stack);
+	m->stack = lispCons(m, val, m->stack);
 }
 
-static lispref_t
-lisppop(Mach *m)
+static LispRef
+lispPop(LispMachine *m)
 {
-	lispref_t val = lispcar(m, m->stack);
-	m->stack = lispcdr(m, m->stack);
+	LispRef val = lispCar(m, m->stack);
+	m->stack = lispCdr(m, m->stack);
 	return val;
 }
 
 static void
-lispgoto(Mach *m, int inst)
+lispGoto(LispMachine *m, int inst)
 {
-	m->inst = lispmkbuiltin(m, inst);
+	m->inst = lispBuiltin(m, inst);
 }
 
 void
-lispcall(Mach *m, int ret, int inst)
+lispCall(LispMachine *m, int ret, int inst)
 {
-	lisppush(m, m->envr);
-	lisppush(m, lispmkbuiltin(m, ret));
-	lispgoto(m, inst);
+	lispPush(m, m->envr);
+	lispPush(m, lispBuiltin(m, ret));
+	lispGoto(m, inst);
 }
 
 static void
-lispreturn(Mach *m)
+lispReturn(LispMachine *m)
 {
-	m->inst = lisppop(m);
-	m->envr = lisppop(m);
+	m->inst = lispPop(m);
+	m->envr = lispPop(m);
 	m->expr = LISP_NIL;
 }
 
 void
-lispdefine(Mach *m, lispref_t sym, lispref_t val)
+lispDefine(LispMachine *m, LispRef sym, LispRef val)
 {
-	lispref_t *pair = lispregister(m, lispcons(m, sym, val));
-	lispref_t *env = lispregister(m, lispcdr(m, m->envr));
-	*env = lispcons(m, *pair, *env);
-	lispsetcdr(m, m->envr, *env);
-	lisprelease(m, pair);
-	lisprelease(m, env);
+	LispRef *pair = lispRegister(m, lispCons(m, sym, val));
+	LispRef *env = lispRegister(m, lispCdr(m, m->envr));
+	*env = lispCons(m, *pair, *env);
+	lispSetCdr(m, m->envr, *env);
+	lispRelease(m, pair);
+	lispRelease(m, env);
 }
 
 int
-lispstep(Mach *m)
+lispStep(LispMachine *m)
 {
 again:
-	if(!lispbuiltin1(m, m->inst)){
-		fprintf(stderr, "lispstep: inst is not built-in, stack corruption?\n");
+	if(!lispIsBuiltinTag(m, m->inst)){
+		fprintf(stderr, "lispStep: inst is not built-in, stack corruption?\n");
 		abort();
 	}
-	switch(lispgetbuiltin(m, m->inst)){
+	switch(lispGetBuiltin(m, m->inst)){
 	default:
-		fprintf(stderr, "lispstep: invalid instruction %zd, bailing out.\n", refval(m->inst));
+		fprintf(stderr, "lispStep: invalid instruction %zd, bailing out.\n", refval(m->inst));
 	case LISP_STATE_CONTINUE:
-		lispreturn(m);
+		lispReturn(m);
 		goto again;
 	case LISP_STATE_RETURN:
 		return 0;
 	case LISP_STATE_EVAL:
-		if(isatom(m, m->expr)){
+		if(lispIsAtom(m, m->expr)){
 			m->value = m->expr;
-			lispreturn(m);
+			lispReturn(m);
 			goto again;
-		} else if(lispsymbol(m, m->expr)){
-			lispref_t lst = m->envr;
+		} else if(lispIsSymbol(m, m->expr)){
+			LispRef lst = m->envr;
 			while(lst != LISP_NIL){
-				lispref_t pair = lispcar(m, lst);
-				if(lisppair(m, pair)){
-					lispref_t key = lispcar(m, pair);
+				LispRef pair = lispCar(m, lst);
+				if(lispIsPairNotNull(m, pair)){
+					LispRef key = lispCar(m, pair);
 					if(key == m->expr){
-						m->value = lispcdr(m, pair);
+						m->value = lispCdr(m, pair);
 						break;
 					}
 				}
-				lst = lispcdr(m, lst);
+				lst = lispCdr(m, lst);
 			}
 			if(lst == LISP_NIL){
 				fprintf(stderr, "undefined symbol: %s\n", (char *)strpointer(m, m->expr));
 				m->value = m->expr; // undefined
 			}
-			lispreturn(m);
+			lispReturn(m);
 			goto again;
-		} else if(lisppair(m, m->expr)){
+		} else if(lispIsPairNotNull(m, m->expr)){
 			// form is (something), so at least we are applying something.
 			// handle special forms (quote, lambda, beta, if, define) before
 			// evaluating args.
 
 			// TODO: evaluating the head element here is a bit of a hack.
 
-			lispref_t head;
-			lisppush(m, m->expr);
-			m->expr = lispcar(m, m->expr);
-			lispcall(m, LISP_STATE_HEAD1, LISP_STATE_EVAL);
+			LispRef head;
+			lispPush(m, m->expr);
+			m->expr = lispCar(m, m->expr);
+			lispCall(m, LISP_STATE_HEAD1, LISP_STATE_EVAL);
 			goto again;
 	case LISP_STATE_HEAD1:
 			head = m->value;
 			m->value = LISP_NIL;
-			m->expr = lisppop(m);
+			m->expr = lispPop(m);
 
-			if(lispbuiltin1(m, head)){
-				lispref_t blt = lispgetbuiltin(m, head);
+			if(lispIsBuiltinTag(m, head)){
+				LispRef blt = lispGetBuiltin(m, head);
 				if(blt == LISP_BUILTIN_IF){
 					// (if cond then else)
-					m->expr = lispcdr(m, m->expr);
-					lisppush(m, m->expr);
+					m->expr = lispCdr(m, m->expr);
+					lispPush(m, m->expr);
 					// evaluate condition recursively
-					m->expr = lispcar(m, m->expr);
-					lispcall(m, LISP_STATE_IF1, LISP_STATE_EVAL);
+					m->expr = lispCar(m, m->expr);
+					lispCall(m, LISP_STATE_IF1, LISP_STATE_EVAL);
 					goto again;
 	case LISP_STATE_IF1:
 					// evaluate result as a tail-call, if condition
 					// evaluated to #f, skip over 'then' to 'else'.
-					m->expr = lisppop(m);
-					m->expr = lispcdr(m, m->expr);
-					if(m->value == lispmkbuiltin(m, LISP_BUILTIN_FALSE))
-						m->expr = lispcdr(m, m->expr);
-					m->expr = lispcar(m, m->expr);
-					lispgoto(m, LISP_STATE_EVAL);
+					m->expr = lispPop(m);
+					m->expr = lispCdr(m, m->expr);
+					if(m->value == lispBuiltin(m, LISP_BUILTIN_FALSE))
+						m->expr = lispCdr(m, m->expr);
+					m->expr = lispCar(m, m->expr);
+					lispGoto(m, LISP_STATE_EVAL);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_BETA || blt == LISP_BUILTIN_CONTINUE){
 					// beta literal: return self.
 					m->value = m->expr;
-					lispreturn(m);
+					lispReturn(m);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_DEFINE){
 					// (define sym val) -> args,
 					// current environment gets sym associated with val.
-					lispref_t *sym = lispregister(m, lispcdr(m, m->expr));
-					lispref_t *val = lispregister(m, lispcdr(m, *sym));
-					*sym = lispcar(m, *sym);
-					if(lisppair(m, *sym)){
+					LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
+					LispRef *val = lispRegister(m, lispCdr(m, *sym));
+					*sym = lispCar(m, *sym);
+					if(lispIsPairNotNull(m, *sym)){
 						// scheme shorthand: (define (name args...) body1 body2...).
-						lispref_t *tmp = lispregister(m, lispcons(m, lispcdr(m, *sym), *val));
-						*val = lispcons(m, lispmkbuiltin(m, LISP_BUILTIN_LAMBDA), *tmp);
-						lisprelease(m, tmp);
-						*sym = lispcar(m, *sym);
+						LispRef *tmp = lispRegister(m, lispCons(m, lispCdr(m, *sym), *val));
+						*val = lispCons(m, lispBuiltin(m, LISP_BUILTIN_LAMBDA), *tmp);
+						lispRelease(m, tmp);
+						*sym = lispCar(m, *sym);
 					} else {
-						*val = lispcar(m, *val);
+						*val = lispCar(m, *val);
 					}
-					lisppush(m, *sym);
+					lispPush(m, *sym);
 					m->expr = *val;
-					lisprelease(m, sym);
-					lisprelease(m, val);
-					lispcall(m, LISP_STATE_DEFINE1, LISP_STATE_EVAL);
+					lispRelease(m, sym);
+					lispRelease(m, val);
+					lispCall(m, LISP_STATE_DEFINE1, LISP_STATE_EVAL);
 					goto again;
 	case LISP_STATE_DEFINE1:
 					// restore sym from stack, construct (sym . val)
-					sym = lispregister(m, lisppop(m));
-					*sym = lispcons(m, *sym, m->value);
+					sym = lispRegister(m, lispPop(m));
+					*sym = lispCons(m, *sym, m->value);
 					// push new (sym . val) just below current env head.
-					lispref_t *env = lispregister(m, lispcdr(m, m->envr));
-					*env = lispcons(m, *sym, *env);
-					lispsetcdr(m, m->envr, *env);
-					lisprelease(m, env);
-					lisprelease(m, sym);
-					lispreturn(m);
+					LispRef *env = lispRegister(m, lispCdr(m, m->envr));
+					*env = lispCons(m, *sym, *env);
+					lispSetCdr(m, m->envr, *env);
+					lispRelease(m, env);
+					lispRelease(m, sym);
+					lispReturn(m);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_SET){
 					// (set! sym val) -> args,
 					// current environment gets sym associated with val.
-					lispref_t *sym = lispregister(m, lispcdr(m, m->expr));
-					lispref_t *val = lispregister(m, lispcdr(m, *sym));
-					*sym = lispcar(m, *sym);
-					if(lisppair(m, *sym)){
+					LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
+					LispRef *val = lispRegister(m, lispCdr(m, *sym));
+					*sym = lispCar(m, *sym);
+					if(lispIsPairNotNull(m, *sym)){
 						// setter for our object system: (set! ('field obj) value).
 						// since set is a special form, we must explicitly evaluate
 						// the list elements (but not call apply)
-						lisppush(m, *val);
+						lispPush(m, *val);
 						// set expr to ('field obj) and eval the list (no apply)
 						m->expr = *sym;
-						lisprelease(m, sym);
-						lisprelease(m, val);
-						lispcall(m, LISP_STATE_SET1, LISP_STATE_LISTEVAL);
+						lispRelease(m, sym);
+						lispRelease(m, val);
+						lispCall(m, LISP_STATE_SET1, LISP_STATE_LISTEVAL);
 						goto again;
 	case LISP_STATE_SET1:
-						val = lispregister(m, lisppop(m));
-						sym = lispregister(m, m->value);
+						val = lispRegister(m, lispPop(m));
+						sym = lispRegister(m, m->value);
 					}
-					*val = lispcar(m, *val);
-					lisppush(m, *sym);
+					*val = lispCar(m, *val);
+					lispPush(m, *sym);
 					m->expr = *val;
-					lisprelease(m, sym);
-					lisprelease(m, val);
-					lispcall(m, LISP_STATE_SET2, LISP_STATE_EVAL);
+					lispRelease(m, sym);
+					lispRelease(m, val);
+					lispCall(m, LISP_STATE_SET2, LISP_STATE_EVAL);
 					goto again;
 	case LISP_STATE_SET2:
 					// restore sym from stack, construct (sym . val)
-					sym = lispregister(m, lisppop(m));
-					lispref_t lst;
-					if(lisppair(m, *sym)){
-						lispref_t beta = lispcar(m, lispcdr(m, *sym));
-						if(lispextref(m, beta)){
+					sym = lispRegister(m, lispPop(m));
+					LispRef lst;
+					if(lispIsPairNotNull(m, *sym)){
+						LispRef beta = lispCar(m, lispCdr(m, *sym));
+						if(lispIsExtRef(m, beta)){
 							// it's (10 buf) form, ie. buffer indexing
 							// assemble a form (set! (10 buf) value) and call/ext
-							m->expr = lispcons(m, m->value, LISP_NIL);
-							m->expr = lispcons(m, *sym, m->expr);
-							m->expr = lispcons(m, lispmkbuiltin(m, LISP_BUILTIN_SET), m->expr);
-							lisprelease(m, sym);
-							lispgoto(m, LISP_STATE_CONTINUE);
+							m->expr = lispCons(m, m->value, LISP_NIL);
+							m->expr = lispCons(m, *sym, m->expr);
+							m->expr = lispCons(m, lispBuiltin(m, LISP_BUILTIN_SET), m->expr);
+							lispRelease(m, sym);
+							lispGoto(m, LISP_STATE_CONTINUE);
 							return 1;
 						}
-						lispref_t betahead = lispcar(m, beta);
-						if(lispbuiltin(m, betahead, LISP_BUILTIN_BETA)){
+						LispRef betahead = lispCar(m, beta);
+						if(lispIsBuiltin(m, betahead, LISP_BUILTIN_BETA)){
 							// it's ('field obj) form, ie. object access.
 							// set environment scan to start from beta's captured environment.
-							lst = lispcdr(m, lispcdr(m, beta));
-							*sym = lispcar(m, *sym);
+							lst = lispCdr(m, lispCdr(m, beta));
+							*sym = lispCar(m, *sym);
 						} else {
 							// else it's unsupported form
 							fprintf(stderr, "set!: unsupported form in first argument\n");
-							m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-							lisprelease(m, sym);
-							lispreturn(m);
+							m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+							lispRelease(m, sym);
+							lispReturn(m);
 							goto again;
 						}
 					} else {
 						lst = m->envr;
 					}
-					lispref_t pair;
+					LispRef pair;
 					while(lst != LISP_NIL){
-						pair = lispcar(m, lst);
-						if(lisppair(m, pair)){
-							lispref_t key = lispcar(m, pair);
+						pair = lispCar(m, lst);
+						if(lispIsPairNotNull(m, pair)){
+							LispRef key = lispCar(m, pair);
 							if(key == *sym)
 								break;
 						}
-						lst = lispcdr(m, lst);
+						lst = lispCdr(m, lst);
 					}
 					if(lst != LISP_NIL)
-						lispsetcdr(m, pair, m->value);
+						lispSetCdr(m, pair, m->value);
 					else
 						fprintf(stderr, "set!: undefined symbol %s\n", (char *)strpointer(m, *sym));
-					lisprelease(m, sym);
+					lispRelease(m, sym);
 					m->value = LISP_NIL;
-					lispreturn(m);
+					lispReturn(m);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_CAPTURE){
 					// (capture vars body)
 					// construct a new environment with only vars in it, then
 					// continue to eval body.
-					lispref_t *newenvr = lispregister(m, LISP_NIL);
-					lispref_t *vars = lispregister(m, lispcdr(m, m->expr));
-					lispref_t *body = lispregister(m, lispcdr(m, *vars));
-					*vars = lispcar(m, *vars);
-					*body = lispcar(m, *body);
-					for(; *vars != LISP_NIL; *vars = lispcdr(m, *vars)){
-						lispref_t var = lispcar(m, *vars);
-						lispref_t env = m->envr;
+					LispRef *newenvr = lispRegister(m, LISP_NIL);
+					LispRef *vars = lispRegister(m, lispCdr(m, m->expr));
+					LispRef *body = lispRegister(m, lispCdr(m, *vars));
+					*vars = lispCar(m, *vars);
+					*body = lispCar(m, *body);
+					for(; *vars != LISP_NIL; *vars = lispCdr(m, *vars)){
+						LispRef var = lispCar(m, *vars);
+						LispRef env = m->envr;
 						while(env != LISP_NIL){
-							lispref_t pair = lispcar(m, env);
-							if(lisppair(m, pair)){
-								lispref_t key = lispcar(m, pair);
+							LispRef pair = lispCar(m, env);
+							if(lispIsPairNotNull(m, pair)){
+								LispRef key = lispCar(m, pair);
 								if(key == var){
-									*newenvr = lispcons(m, pair, *newenvr);
+									*newenvr = lispCons(m, pair, *newenvr);
 									break;
 								}
 							}
-							env = lispcdr(m, env);
+							env = lispCdr(m, env);
 						}
 					}
 					m->envr = *newenvr;
 					m->expr = *body;
-					lisprelease(m, vars);
-					lisprelease(m, newenvr);
-					lisprelease(m, body);
-					lispgoto(m, LISP_STATE_EVAL);
+					lispRelease(m, vars);
+					lispRelease(m, newenvr);
+					lispRelease(m, body);
+					lispGoto(m, LISP_STATE_EVAL);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_LAMBDA){
 					// (lambda args body) -> (beta (lambda args body) envr)
-					lispref_t *tmp = lispregister(m, lispcons(m, m->expr, m->envr));
-					m->value = lispcons(m, lispmkbuiltin(m, LISP_BUILTIN_BETA), *tmp);
-					lisprelease(m, tmp);
-					lispreturn(m);
+					LispRef *tmp = lispRegister(m, lispCons(m, m->expr, m->envr));
+					m->value = lispCons(m, lispBuiltin(m, LISP_BUILTIN_BETA), *tmp);
+					lispRelease(m, tmp);
+					lispReturn(m);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_QUOTE){
 					// (quote args) -> args
-					m->value = lispcar(m, lispcdr(m, m->expr)); // expr = cdar expr
-					lispreturn(m);
+					m->value = lispCar(m, lispCdr(m, m->expr)); // expr = cdar expr
+					lispReturn(m);
 					goto again;
 				}
 			}
 
 			// at this point we know it is a list, and that it is
 			// not a special form. evaluate args, then apply.
-			lispcall(m, LISP_STATE_APPLY, LISP_STATE_LISTEVAL);
+			lispCall(m, LISP_STATE_APPLY, LISP_STATE_LISTEVAL);
 			goto again;
 	case LISP_STATE_APPLY:
 			m->expr = m->value;
-			head = lispcar(m, m->expr);
-			if(lispbuiltin1(m, head)){
-				lispref_t blt = lispgetbuiltin(m, head);
+			head = lispCar(m, m->expr);
+			if(lispIsBuiltinTag(m, head)){
+				LispRef blt = lispGetBuiltin(m, head);
 				if(blt >= LISP_BUILTIN_ADD && blt <= LISP_BUILTIN_REM){
-					lispref_t ref0, ref;
+					LispRef ref0, ref;
 					int ires;
 					int nterms;
-					m->expr = lispcdr(m, m->expr);
-					ref0 = lispcar(m, m->expr);
-					if(lispnumber(m, ref0)){
-						ires = lispgetint(m, ref0);
+					m->expr = lispCdr(m, m->expr);
+					ref0 = lispCar(m, m->expr);
+					if(lispIsNumber(m, ref0)){
+						ires = lispGetInt(m, ref0);
 					} else {
-						m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-						lispreturn(m);
+						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+						lispReturn(m);
 						goto again;
 					}
-					m->expr = lispcdr(m, m->expr);
+					m->expr = lispCdr(m, m->expr);
 					nterms = 0;
 					while(m->expr != LISP_NIL){
 						nterms++;
-						ref = lispcar(m, m->expr);
-						if(lispnumber(m, ref)){
-							long long tmp = lispgetint(m, ref);
+						ref = lispCar(m, m->expr);
+						if(lispIsNumber(m, ref)){
+							long long tmp = lispGetInt(m, ref);
 							switch(blt){
 							case LISP_BUILTIN_ADD:
 								ires += tmp;
@@ -1130,153 +1095,153 @@ again:
 								break;
 							}
 						} else {
-							m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-							lispreturn(m);
+							m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+							lispReturn(m);
 							goto again;
 						}
-						m->expr = lispcdr(m, m->expr);
+						m->expr = lispCdr(m, m->expr);
 					}
 					// special case for unary sub: make it a negate.
 					if(blt == LISP_BUILTIN_SUB && nterms == 0)
 						ires = -ires;
-					m->value = lispmknumber(m, ires);
-					lispreturn(m);
+					m->value = lispNumber(m, ires);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_ISPAIR){ // (pair? ...)
-					m->expr = lispcdr(m, m->expr);
-					m->expr = lispcar(m, m->expr);
-					if(lisppair(m, m->expr))
-						m->value =  lispmkbuiltin(m, LISP_BUILTIN_TRUE);
+					m->expr = lispCdr(m, m->expr);
+					m->expr = lispCar(m, m->expr);
+					if(lispIsPairNotNull(m, m->expr))
+						m->value =  lispBuiltin(m, LISP_BUILTIN_TRUE);
 					else
-						m->value =  lispmkbuiltin(m, LISP_BUILTIN_FALSE);
-					lispreturn(m);
+						m->value =  lispBuiltin(m, LISP_BUILTIN_FALSE);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_ISEQ){ // (eq? ...)
-					m->expr = lispcdr(m, m->expr);
-					lispref_t ref0 = lispcar(m, m->expr);
-					m->expr = lispcdr(m, m->expr);
+					m->expr = lispCdr(m, m->expr);
+					LispRef ref0 = lispCar(m, m->expr);
+					m->expr = lispCdr(m, m->expr);
 					while(m->expr != LISP_NIL){
-						lispref_t ref = lispcar(m, m->expr);
+						LispRef ref = lispCar(m, m->expr);
 						if(reftag(ref0) != reftag(ref)){
-							m->value = lispmkbuiltin(m, LISP_BUILTIN_FALSE);
+							m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 							goto eqdone;
-						} else if(lispnumber(m, ref0) && lispnumber(m, ref)){
-							if(lispgetint(m, ref0) != lispgetint(m, ref)){
-								m->value = lispmkbuiltin(m, LISP_BUILTIN_FALSE);
+						} else if(lispIsNumber(m, ref0) && lispIsNumber(m, ref)){
+							if(lispGetInt(m, ref0) != lispGetInt(m, ref)){
+								m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 								goto eqdone;
 							}
-						} else if(lispispair(m, ref0) && lispispair(m, ref)){
+						} else if(lispIsPair(m, ref0) && lispIsPair(m, ref)){
 							if(ref0 != ref){
-								m->value = lispmkbuiltin(m, LISP_BUILTIN_FALSE);
+								m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 								goto eqdone;
 							}
 						} else {
 							fprintf(stderr, "eq?: unsupported types %d %d\n", reftag(ref0), reftag(ref));
-							m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-							lispreturn(m);
+							m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+							lispReturn(m);
 							goto again;
 						}
-						m->expr = lispcdr(m, m->expr);
+						m->expr = lispCdr(m, m->expr);
 					}
-					m->value = lispmkbuiltin(m, LISP_BUILTIN_TRUE);
+					m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
 				eqdone:
-					lispreturn(m);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_ISLESS){
-					m->expr = lispcdr(m, m->expr);
-					lispref_t ref0 = lispcar(m, m->expr);
-					m->expr = lispcdr(m, m->expr);
-					lispref_t ref1 = lispcar(m, m->expr);
-					m->value = lispmkbuiltin(m, LISP_BUILTIN_FALSE); // default to false.
-					if(lispnumber(m, ref0) && lispnumber(m, ref1)){
-						if(lispgetint(m, ref0) < lispgetint(m, ref1))
-							m->value = lispmkbuiltin(m, LISP_BUILTIN_TRUE);
-					} else if(lispsymbol(m, ref0) && lispsymbol(m, ref1)){
+					m->expr = lispCdr(m, m->expr);
+					LispRef ref0 = lispCar(m, m->expr);
+					m->expr = lispCdr(m, m->expr);
+					LispRef ref1 = lispCar(m, m->expr);
+					m->value = lispBuiltin(m, LISP_BUILTIN_FALSE); // default to false.
+					if(lispIsNumber(m, ref0) && lispIsNumber(m, ref1)){
+						if(lispGetInt(m, ref0) < lispGetInt(m, ref1))
+							m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
+					} else if(lispIsSymbol(m, ref0) && lispIsSymbol(m, ref1)){
 						if(strcmp(strpointer(m, ref0), strpointer(m, ref1)) < 0)
-							m->value = lispmkbuiltin(m, LISP_BUILTIN_TRUE);
+							m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
 					} else {
 						fprintf(stderr, "less?: unsupported types\n");
-						m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-						lispreturn(m);
+						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+						lispReturn(m);
 						goto again;
 					}
-					lispreturn(m);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_ISERROR){ // (error? ...)
-					m->expr = lispcdr(m, m->expr);
-					m->expr = lispcar(m, m->expr);
-					if(lisperror(m, m->expr))
-						m->value =  lispmkbuiltin(m, LISP_BUILTIN_TRUE);
+					m->expr = lispCdr(m, m->expr);
+					m->expr = lispCar(m, m->expr);
+					if(lispIsError(m, m->expr))
+						m->value =  lispBuiltin(m, LISP_BUILTIN_TRUE);
 					else
-						m->value =  lispmkbuiltin(m, LISP_BUILTIN_FALSE);
-					lispreturn(m);
+						m->value =  lispBuiltin(m, LISP_BUILTIN_FALSE);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_SETCAR || blt == LISP_BUILTIN_SETCDR){
-					lispref_t *cons = lispregister(m, lispcdr(m, m->expr));
-					lispref_t *val = lispregister(m, lispcdr(m, *cons));
-					*cons = lispcar(m, *cons); // cons
-					*val = lispcar(m, *val); // val
+					LispRef *cons = lispRegister(m, lispCdr(m, m->expr));
+					LispRef *val = lispRegister(m, lispCdr(m, *cons));
+					*cons = lispCar(m, *cons); // cons
+					*val = lispCar(m, *val); // val
 					if(blt == LISP_BUILTIN_SETCAR)
-						lispsetcar(m, *cons, *val);
+						lispSetCar(m, *cons, *val);
 					else
-						lispsetcdr(m, *cons, *val);
-					lisprelease(m, cons);
-					lisprelease(m, val);
-					lispreturn(m);
+						lispSetCdr(m, *cons, *val);
+					lispRelease(m, cons);
+					lispRelease(m, val);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_CAR){
-					m->reg2 = lispcdr(m, m->expr);
-					m->reg2 = lispcar(m, m->reg2);
-					m->value = lispcar(m, m->reg2);
+					m->reg2 = lispCdr(m, m->expr);
+					m->reg2 = lispCar(m, m->reg2);
+					m->value = lispCar(m, m->reg2);
 					m->reg2 = LISP_NIL;
-					lispreturn(m);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_CDR){
-					m->reg2 = lispcdr(m, m->expr);
-					m->reg2 = lispcar(m, m->reg2);
-					m->value = lispcdr(m, m->reg2);
+					m->reg2 = lispCdr(m, m->expr);
+					m->reg2 = lispCar(m, m->reg2);
+					m->value = lispCdr(m, m->reg2);
 					m->reg2 = LISP_NIL;
-					lispreturn(m);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_CONS){
-					m->reg2 = lispcdr(m, m->expr);
-					m->reg3 = lispcdr(m, m->reg2);
-					m->reg2 = lispcar(m, m->reg2);
-					m->reg3 = lispcar(m, m->reg3);
-					m->value = lispcons(m, m->reg2, m->reg3);
+					m->reg2 = lispCdr(m, m->expr);
+					m->reg3 = lispCdr(m, m->reg2);
+					m->reg2 = lispCar(m, m->reg2);
+					m->reg3 = lispCar(m, m->reg3);
+					m->value = lispCons(m, m->reg2, m->reg3);
 					m->reg2 = LISP_NIL;
 					m->reg3 = LISP_NIL;
-					lispreturn(m);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_CALLCC){
-					m->expr = lispcdr(m, m->expr);
-					m->reg2 = lispcons(m, lispmkbuiltin(m, LISP_BUILTIN_CONTINUE), m->stack);
-					m->reg3 = lispcons(m, m->reg2, LISP_NIL);
-					m->expr = lispcons(m, lispcar(m, m->expr), m->reg3);
+					m->expr = lispCdr(m, m->expr);
+					m->reg2 = lispCons(m, lispBuiltin(m, LISP_BUILTIN_CONTINUE), m->stack);
+					m->reg3 = lispCons(m, m->reg2, LISP_NIL);
+					m->expr = lispCons(m, lispCar(m, m->expr), m->reg3);
 					m->reg2 = LISP_NIL;
 					m->reg3 = LISP_NIL;
-					lispgoto(m, LISP_STATE_EVAL);
+					lispGoto(m, LISP_STATE_EVAL);
 					goto again;
 				} else if(blt == LISP_BUILTIN_PRINT1){
-					m->expr = lispcdr(m, m->expr);
-					m->reg2 = lispcar(m, m->expr);
-					m->expr = lispcdr(m, m->expr);
-					m->expr = lispcar(m, m->expr);
-					lispprint1(m, m->expr, lispgetint(m, m->reg2));
+					m->expr = lispCdr(m, m->expr);
+					m->reg2 = lispCar(m, m->expr);
+					m->expr = lispCdr(m, m->expr);
+					m->expr = lispCar(m, m->expr);
+					lispPrint1(m, m->expr, lispGetInt(m, m->reg2));
 					m->reg2 = LISP_NIL;
 					m->value = m->expr;
-					lispreturn(m);
+					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_EVAL){
-					m->expr = lispcar(m, lispcdr(m, m->expr)); // expr = cdar expr
-					lispgoto(m, LISP_STATE_EVAL);
+					m->expr = lispCar(m, lispCdr(m, m->expr)); // expr = cdar expr
+					lispGoto(m, LISP_STATE_EVAL);
 					goto again;
 				}
-			} else if(lispextref(m, head)){
+			} else if(lispIsExtRef(m, head)){
 				// we are applying an external object to lisp arguments..
-				lispgoto(m, LISP_STATE_CONTINUE);
+				lispGoto(m, LISP_STATE_CONTINUE);
 				return 1;
-			} else if(lispsymbol(m, head) || lispnumber(m, head)){
+			} else if(lispIsSymbol(m, head) || lispIsNumber(m, head)){
 				// this is the accessor (getter/setter) for our "namespaces".
 				// it returns an entry from a function's environment, so that
 				// an object constructor can become as simple as
@@ -1288,196 +1253,196 @@ again:
 				// special form in set! for this notation, so that
 				//		(set! ('x r0) 7)
 				// does what you might expect.
-				lispref_t beta = lispcar(m, lispcdr(m, m->expr));
+				LispRef beta = lispCar(m, lispCdr(m, m->expr));
 				if(beta == LISP_NIL){
-					m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-					lispreturn(m);
+					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+					lispReturn(m);
 					goto again;
 				}
-				if(lispextref(m, beta)){
-					m->expr = lispcons(m, beta, LISP_NIL);
-					m->expr = lispcons(m, head, m->expr);
-					lispgoto(m, LISP_STATE_CONTINUE);
+				if(lispIsExtRef(m, beta)){
+					m->expr = lispCons(m, beta, LISP_NIL);
+					m->expr = lispCons(m, head, m->expr);
+					lispGoto(m, LISP_STATE_CONTINUE);
 					return 1;
 				}
-				lispref_t betahead = lispcar(m, beta);
-				if(lispbuiltin(m, betahead, LISP_BUILTIN_BETA)){
-					lispref_t lst = lispcdr(m, lispcdr(m, beta));
+				LispRef betahead = lispCar(m, beta);
+				if(lispIsBuiltin(m, betahead, LISP_BUILTIN_BETA)){
+					LispRef lst = lispCdr(m, lispCdr(m, beta));
 					while(lst != LISP_NIL){
-						lispref_t pair = lispcar(m, lst);
-						if(lisppair(m, pair)){
-							lispref_t key = lispcar(m, pair);
+						LispRef pair = lispCar(m, lst);
+						if(lispIsPairNotNull(m, pair)){
+							LispRef key = lispCar(m, pair);
 							if(key == head){
-								m->value = lispcdr(m, pair);
-								lispreturn(m);
+								m->value = lispCdr(m, pair);
+								lispReturn(m);
 								goto again;
 							}
 						}
-						lst = lispcdr(m, lst);
+						lst = lispCdr(m, lst);
 					}
 					fprintf(stderr, "symbol %s not found in object\n", (char *)strpointer(m, head));
-					m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-					lispreturn(m);
+					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+					lispReturn(m);
 					goto again;
 				} else {
 					fprintf(stderr, "symbol finding in a non-object\n");
-					m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-					lispreturn(m);
+					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+					lispReturn(m);
 					goto again;
 				}
 
-			} else if(lisppair(m, head)){
+			} else if(lispIsPairNotNull(m, head)){
 
 				// form is ((beta (lambda...)) args), or a continuation.
 				// ((beta (lambda args . body) . envr) args) -> (body),
 				// with a new environment
 
-				lispref_t beta, lambda;
-				beta = lispcar(m, m->expr);
+				LispRef beta, lambda;
+				beta = lispCar(m, m->expr);
 				if(beta == LISP_NIL){
-					m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-					lispreturn(m);
+					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+					lispReturn(m);
 					goto again;
 				}
-				head = lispcar(m, beta);
-				if(!lispbuiltin1(m, head)){
-					m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-					lispreturn(m);
+				head = lispCar(m, beta);
+				if(!lispIsBuiltinTag(m, head)){
+					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+					lispReturn(m);
 					goto again;
 				}
-				if(lispbuiltin(m, head, LISP_BUILTIN_CONTINUE)){
+				if(lispIsBuiltin(m, head, LISP_BUILTIN_CONTINUE)){
 					// ((continue . stack) return-value)
-					m->stack = lispcdr(m, beta);
-					m->value = lispcdr(m, m->expr);
-					if(lisppair(m, m->value))
-						m->value = lispcar(m, m->value);
-					lispreturn(m);
+					m->stack = lispCdr(m, beta);
+					m->value = lispCdr(m, m->expr);
+					if(lispIsPairNotNull(m, m->value))
+						m->value = lispCar(m, m->value);
+					lispReturn(m);
 					goto again;
-				} else if(lispbuiltin(m, head, LISP_BUILTIN_BETA)){
+				} else if(lispIsBuiltin(m, head, LISP_BUILTIN_BETA)){
 
-					lambda = lispcar(m, lispcdr(m, beta));
-					m->envr = lispcdr(m, lispcdr(m, beta));
+					lambda = lispCar(m, lispCdr(m, beta));
+					m->envr = lispCdr(m, lispCdr(m, beta));
 
-					lispref_t *argnames = lispregister(m, lispcdr(m, lambda));
-					lispref_t *args = lispregister(m, lispcdr(m, m->expr)); // args = cdr expr
-					if(lisppair(m, *argnames)){
+					LispRef *argnames = lispRegister(m, lispCdr(m, lambda));
+					LispRef *args = lispRegister(m, lispCdr(m, m->expr)); // args = cdr expr
+					if(lispIsPairNotNull(m, *argnames)){
 						// loop over argnames and args simultaneously, cons
 						// them as pairs to the environment
-						*argnames = lispcar(m, *argnames);
-						while(lisppair(m, *argnames) && lisppair(m, *args)){
-							lispref_t *pair = lispregister(m, lispcons(m,
-								lispcar(m, *argnames),
-								lispcar(m, *args)));
-							m->envr = lispcons(m, *pair, m->envr);
-							*argnames = lispcdr(m, *argnames);
-							*args = lispcdr(m, *args);
-							lisprelease(m, pair);
+						*argnames = lispCar(m, *argnames);
+						while(lispIsPairNotNull(m, *argnames) && lispIsPairNotNull(m, *args)){
+							LispRef *pair = lispRegister(m, lispCons(m,
+								lispCar(m, *argnames),
+								lispCar(m, *args)));
+							m->envr = lispCons(m, *pair, m->envr);
+							*argnames = lispCdr(m, *argnames);
+							*args = lispCdr(m, *args);
+							lispRelease(m, pair);
 						}
 					}
 
 					// scheme-style variadic: argnames list terminates in a
 					// symbol instead of LISP_NIL, associate the rest of argslist
 					// with it. notice: (lambda x (body)) also lands here.
-					if(*argnames != LISP_NIL && !lisppair(m, *argnames)){
-						lispref_t *pair = lispregister(m, lispcons(m, *argnames, *args));
-						m->envr = lispcons(m, *pair, m->envr);
-						lisprelease(m, pair);
+					if(*argnames != LISP_NIL && !lispIsPairNotNull(m, *argnames)){
+						LispRef *pair = lispRegister(m, lispCons(m, *argnames, *args));
+						m->envr = lispCons(m, *pair, m->envr);
+						lispRelease(m, pair);
 					} else if(*argnames != LISP_NIL || *args != LISP_NIL){
 						fprintf(stderr, "mismatch in number of function args\n");
-						m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-						lispreturn(m);
+						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+						lispReturn(m);
 						goto again;
 					}
 
 					// push a new 'environment head' in.
-					m->envr = lispcons(m, LISP_NIL, m->envr);
+					m->envr = lispCons(m, LISP_NIL, m->envr);
 					// clear the registers.
-					lisprelease(m, argnames);
-					lisprelease(m, args);
+					lispRelease(m, argnames);
+					lispRelease(m, args);
 
 					// parameters are bound, pull body from lambda to m->expr.
-					beta = lispcar(m, m->expr); // beta = car expr
-					lambda = lispcar(m, lispcdr(m, beta));
-					m->expr = lispcdr(m, lispcdr(m, lambda));
-					lisppush(m, m->expr);
+					beta = lispCar(m, m->expr); // beta = car expr
+					lambda = lispCar(m, lispCdr(m, beta));
+					m->expr = lispCdr(m, lispCdr(m, lambda));
+					lispPush(m, m->expr);
 				} else {
 					if(refval(head) != LISP_BUILTIN_BETA){
 						fprintf(stderr, "applying list with non-beta head\n");
-						m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-						lispreturn(m);
+						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+						lispReturn(m);
 						goto again;
 					}
 				}
 
 	case LISP_STATE_BETA1:
-				m->reg2 = lispcar(m, m->stack);
+				m->reg2 = lispCar(m, m->stack);
 				if(m->reg2 != LISP_NIL){
-					m->expr = lispcar(m, m->reg2);
-					m->reg2 = lispcdr(m, m->reg2);
-					lispsetcar(m, m->stack, m->reg2);
+					m->expr = lispCar(m, m->reg2);
+					m->reg2 = lispCdr(m, m->reg2);
+					lispSetCar(m, m->stack, m->reg2);
 					if(m->reg2 != LISP_NIL){
-						lispcall(m, LISP_STATE_BETA1, LISP_STATE_EVAL);
+						lispCall(m, LISP_STATE_BETA1, LISP_STATE_EVAL);
 						goto again;
 					} else { // tail call
-						lisppop(m);
-						lispgoto(m, LISP_STATE_EVAL);
+						lispPop(m);
+						lispGoto(m, LISP_STATE_EVAL);
 						goto again;
 					}
 				}
-				lisppop(m); // pop expr.
-				lispreturn(m);
+				lispPop(m); // pop expr.
+				lispReturn(m);
 				goto again;
 			} else {
 				fprintf(stderr, "apply: head is weird: ");
 				//eval_print(m);
 				fprintf(stderr, "\n");
-				lispreturn(m);
+				lispReturn(m);
 				goto again;
 			}
 		}
-		fprintf(stderr, "lispstep eval: unrecognized form: ");
+		fprintf(stderr, "lispStep eval: unrecognized form: ");
 		//eval_print(m);
 		fprintf(stderr, "\n");
-		m->value = lispmkbuiltin(m, LISP_BUILTIN_ERROR);
-		lispreturn(m);
+		m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+		lispReturn(m);
 		goto again;
 	case LISP_STATE_LISTEVAL:
 		{
-			lispref_t *state;
+			LispRef *state;
 			// construct initial evaluation state: (expr-cell . value-cell)
 			state = &m->reg2;
-			m->reg3 = lispcons(m, LISP_NIL, LISP_NIL); // first "value-cell"
-			lisppush(m, m->reg3);
-			*state = lispcons(m, m->expr, m->reg3); // construct evaluation state
-			lisppush(m, *state);
+			m->reg3 = lispCons(m, LISP_NIL, LISP_NIL); // first "value-cell"
+			lispPush(m, m->reg3);
+			*state = lispCons(m, m->expr, m->reg3); // construct evaluation state
+			lispPush(m, *state);
 			m->reg3 = m->expr;
 			goto listeval_first;
 	case LISP_STATE_LISTEVAL1:
 			state = &m->reg2;
-			*state = lispcar(m, m->stack);
+			*state = lispCar(m, m->stack);
 			// store new m->value to value-cell.
-			lispsetcar(m, lispcdr(m, *state), m->value);
+			lispSetCar(m, lispCdr(m, *state), m->value);
 			// load expr-cell to reg3.
-			m->reg3 = lispcar(m, *state); // expr-cell = car(state)
+			m->reg3 = lispCar(m, *state); // expr-cell = car(state)
 listeval_first:
-			if(lisppair(m, m->reg3)){
+			if(lispIsPairNotNull(m, m->reg3)){
 				// load new expr from expr-cell and set expr-cell to next expr.
-				m->expr = lispcar(m, m->reg3); // expr = (car expr-cell)
-				m->reg3 = lispcdr(m, m->reg3); // reg3 = (cdr expr-cell)
-				lispsetcar(m, *state, m->reg3); //  car(state) = (cdr expr-cell)
+				m->expr = lispCar(m, m->reg3); // expr = (car expr-cell)
+				m->reg3 = lispCdr(m, m->reg3); // reg3 = (cdr expr-cell)
+				lispSetCar(m, *state, m->reg3); //  car(state) = (cdr expr-cell)
 
 				// allocate new value-cell, link cdr of current value-cell to it and set value-cell to the new one.
-				m->reg4 = lispcons(m, LISP_NIL, LISP_NIL);
-				m->reg3 = lispcdr(m, *state); // reg3 = value-cell ; cdr(state)
-				lispsetcdr(m, m->reg3, m->reg4); // cdr(cdr state) = reg4, cdr(value-cell) = reg4
-				lispsetcdr(m, *state, m->reg4); // value-cell = reg4
+				m->reg4 = lispCons(m, LISP_NIL, LISP_NIL);
+				m->reg3 = lispCdr(m, *state); // reg3 = value-cell ; cdr(state)
+				lispSetCdr(m, m->reg3, m->reg4); // cdr(cdr state) = reg4, cdr(value-cell) = reg4
+				lispSetCdr(m, *state, m->reg4); // value-cell = reg4
 
 				// clean up registers, mainly for gc.
 				*state = LISP_NIL;
 				m->reg3 = LISP_NIL;
 				m->reg4 = LISP_NIL;
 				// call "apply" on the current expr and have it return to this case.
-				lispcall(m, LISP_STATE_LISTEVAL1, LISP_STATE_EVAL);
+				lispCall(m, LISP_STATE_LISTEVAL1, LISP_STATE_EVAL);
 				goto again;
 			}
 			// this following bit is non-standard, it allows one to call a function
@@ -1489,26 +1454,26 @@ listeval_first:
 			// so defining apply as a function is still going to be necessary.
 			if(m->reg3 != LISP_NIL){
 				m->expr = m->reg3;
-				lispsetcar(m, *state, LISP_NIL);
+				lispSetCar(m, *state, LISP_NIL);
 				*state = LISP_NIL;
 				m->reg3 = LISP_NIL;
 				m->reg4 = LISP_NIL;
-				lispcall(m, LISP_STATE_LISTEVAL2, LISP_STATE_EVAL);
+				lispCall(m, LISP_STATE_LISTEVAL2, LISP_STATE_EVAL);
 				goto again;
 	case LISP_STATE_LISTEVAL2:
 				state = &m->reg2;
-				*state = lispcar(m, m->stack);
+				*state = lispCar(m, m->stack);
 				// store new m->value to the rest of value chain.
-				m->reg3 = lispcdr(m, *state);
-				lispsetcdr(m, m->reg3, m->value);
+				m->reg3 = lispCdr(m, *state);
+				lispSetCdr(m, m->reg3, m->value);
 			}
 
 			*state = LISP_NIL;
 			m->reg3 = LISP_NIL;
 			m->reg4 = LISP_NIL;
-			lisppop(m);
-			m->value = lispcdr(m, lisppop(m));
-			lispreturn(m);
+			lispPop(m);
+			m->value = lispCdr(m, lispPop(m));
+			lispReturn(m);
 			goto again;
 		}
 	}
@@ -1527,20 +1492,20 @@ listeval_first:
  *	freed entirely if printing of constants or symbol names isn't required and
  *	memory is somehow really that scarce.
  */
-static lispref_t
-lispcopy(Mach *newm, Mach *oldm, lispref_t ref)
+static LispRef
+lispCopy(LispMachine *newm, LispMachine *oldm, LispRef ref)
 {
-	if(lispispair(oldm, ref)){
+	if(lispIsPair(oldm, ref)){
 		if(ref == LISP_NIL)
 			return LISP_NIL;
-		if(lispbuiltin(oldm, lispcar(oldm, ref), LISP_BUILTIN_FORWARD))
-			return lispcdr(oldm, ref);
+		if(lispIsBuiltin(oldm, lispCar(oldm, ref), LISP_BUILTIN_FORWARD))
+			return lispCdr(oldm, ref);
 		// load from old, cons in new. this is the copy phase: any references in
 		// the new cell will point to something in oldm.
-		lispref_t newref = lispcons(newm, lispcar(oldm, ref), lispcdr(oldm, ref));
+		LispRef newref = lispCons(newm, lispCar(oldm, ref), lispCdr(oldm, ref));
 		// rewrite oldm to point to new.
-		lispsetcar(oldm, ref, lispmkbuiltin(oldm, LISP_BUILTIN_FORWARD));
-		lispsetcdr(oldm, ref, newref);
+		lispSetCar(oldm, ref, lispBuiltin(oldm, LISP_BUILTIN_FORWARD));
+		lispSetCdr(oldm, ref, newref);
 		return newref;
 	}
 	return ref;
@@ -1548,12 +1513,12 @@ lispcopy(Mach *newm, Mach *oldm, lispref_t ref)
 
 /*
  *	This is the main garbage collector routine. The idea is to create the root
- *	set from vm registers using lispcopy to an otherwise empty machine.
+ *	set from vm registers using lispCopy to an otherwise empty machine.
  *	After the root set is formed, it proceeds in a breath-first manner, calling
- *	lispcopy on all of its memory locations until everything has been collapsed.
+ *	lispCopy on all of its memory locations until everything has been collapsed.
  */
 void
-lispcollect(Mach *m)
+lispCollect(LispMachine *m)
 {
 	if(m->mem.len == 0)
 		return;
@@ -1562,7 +1527,7 @@ lispcollect(Mach *m)
 	// There are two "memories" within m, namely m->mem and m->copy.
 	// we create a copy of m called oldm here, and then exchange m->mem and
 	// m->copy. It's a waste of memory, but it avoids one big malloc per gc.
-	Mach oldm;
+	LispMachine oldm;
 	memcpy(&oldm, m, sizeof oldm);
 	memcpy(&m->mem, &oldm.copy, sizeof m->mem);
 	if(m->mem.cap != oldm.mem.cap){
@@ -1574,36 +1539,36 @@ lispcollect(Mach *m)
 			abort();
 		}
 		m->mem.ref = p;
-		lispmemset(m->mem.ref, LISP_NIL, m->mem.cap);
+		lispMemSet(m->mem.ref, LISP_NIL, m->mem.cap);
 	}
 	m->mem.len = 0;
 	memcpy(&m->copy, &oldm.mem, sizeof m->copy);
 	m->gclock++;
 
 	// copy registers as roots.
-	lispref_t reg0tmp = lispcopy(m, &oldm, oldm.reg0);
-	lispref_t reg1tmp = lispcopy(m, &oldm, oldm.reg1);
-	m->reg2 = lispcopy(m, &oldm, oldm.reg2);
-	m->reg3 = lispcopy(m, &oldm, oldm.reg3);
-	m->reg4 = lispcopy(m, &oldm, oldm.reg4);
+	LispRef reg0tmp = lispCopy(m, &oldm, oldm.reg0);
+	LispRef reg1tmp = lispCopy(m, &oldm, oldm.reg1);
+	m->reg2 = lispCopy(m, &oldm, oldm.reg2);
+	m->reg3 = lispCopy(m, &oldm, oldm.reg3);
+	m->reg4 = lispCopy(m, &oldm, oldm.reg4);
 
 	// copy the "dynamic" registers.
 	uint32_t reguse = oldm.reguse;
 	for(size_t i = 0; i < nelem(m->regs); i++)
 		if((reguse & (1<<i)) != 0)
-			m->regs[i] = lispcopy(m, &oldm, oldm.regs[i]);
+			m->regs[i] = lispCopy(m, &oldm, oldm.regs[i]);
 	m->reguse = reguse;
 
-	m->value = lispcopy(m, &oldm, oldm.value);
-	m->expr = lispcopy(m, &oldm, oldm.expr);
-	m->envr = lispcopy(m, &oldm, oldm.envr);
-	m->stack = lispcopy(m, &oldm, oldm.stack);
+	m->value = lispCopy(m, &oldm, oldm.value);
+	m->expr = lispCopy(m, &oldm, oldm.expr);
+	m->envr = lispCopy(m, &oldm, oldm.envr);
+	m->stack = lispCopy(m, &oldm, oldm.stack);
 
 	for(size_t i = 2; i < m->mem.len; i++)
-		m->mem.ref[i] = lispcopy(m, &oldm, m->mem.ref[i]);
+		m->mem.ref[i] = lispCopy(m, &oldm, m->mem.ref[i]);
 
 if(0)fprintf(stderr, "collected: from %zu to %zu\n", oldlen, m->mem.len);
-	// re-copy the registers used by cons, lispcopy calls cons itself so
+	// re-copy the registers used by cons, lispCopy calls cons itself so
 	// they get overwritten over and over again during gc.
 	m->reg0 = reg0tmp;
 	m->reg1 = reg1tmp;
@@ -1612,18 +1577,18 @@ if(0)fprintf(stderr, "collected: from %zu to %zu\n", oldlen, m->mem.len);
 }
 
 void
-lispinit(Mach *m)
+lispInit(LispMachine *m)
 {
 	// install initial environment (define built-ins)
-	m->envr = lispcons(m, LISP_NIL, LISP_NIL);
+	m->envr = lispCons(m, LISP_NIL, LISP_NIL);
 	for(size_t i = 0; i < LISP_NUM_BUILTINS; i++){
-		lispref_t sym = lispmksymbol(m, bltnames[i]);
-		lispdefine(m, sym, lispmkbuiltin(m, i));
+		LispRef sym = lispSymbol(m, bltnames[i]);
+		lispDefine(m, sym, lispBuiltin(m, i));
 	}
 }
 
 int
-lispsetport(Mach *m, lispport_t port, int (*writebyte)(int ch, void *ctx), int (*readbyte)(void *ctx), int (*unreadbyte)(int ch, void *ctx), void *ctx)
+lispSetPort(LispMachine *m, LispPort port, int (*writebyte)(int ch, void *ctx), int (*readbyte)(void *ctx), int (*unreadbyte)(int ch, void *ctx), void *ctx)
 {
 	if(port >= m->portscap){
 		size_t portscap = m->portscap == 0 ? port+1 : m->portscap * 2;
@@ -1640,28 +1605,28 @@ lispsetport(Mach *m, lispport_t port, int (*writebyte)(int ch, void *ctx), int (
 	return 0;
 }
 
-lispref_t
-lispextalloc(Mach *m)
+LispRef
+lispExtAlloc(LispMachine *m)
 {
 	if(m->extrefs.len == m->extrefs.cap){
 		m->extrefs.cap = nextpow2(m->extrefs.cap);
 		void *p = realloc(m->extrefs.p, m->extrefs.cap * sizeof m->extrefs.p[0]);
 		if(p == NULL){
-			fprintf(stderr, "lispextalloc: realloc failed\n");
+			fprintf(stderr, "lispExtAlloc: realloc failed\n");
 			abort();
 		}
 		m->extrefs.p = p;
 	}
-	lispref_t ref = mkref(m->extrefs.len, LISP_TAG_EXTREF);
+	LispRef ref = mkref(m->extrefs.len, LISP_TAG_EXTREF);
 	assert(urefval(ref) == m->extrefs.len);
 	m->extrefs.len++;
 	return ref;
 }
 
 int
-lispextset(Mach *m, lispref_t ref, void *obj, void *type)
+lispExtSet(LispMachine *m, LispRef ref, void *obj, void *type)
 {
-	if(lispextref(m, ref)){
+	if(lispIsExtRef(m, ref)){
 		size_t i = refval(ref);
 		m->extrefs.p[i].obj = obj;
 		m->extrefs.p[i].type = type;
@@ -1672,9 +1637,9 @@ lispextset(Mach *m, lispref_t ref, void *obj, void *type)
 }
 
 int
-lispextget(Mach *m, lispref_t ref, void **obj, void **type)
+lispExtGet(LispMachine *m, LispRef ref, void **obj, void **type)
 {
-	if(lispextref(m, ref)){
+	if(lispIsExtRef(m, ref)){
 		size_t i = refval(ref);
 		if(obj != NULL)
 			*obj = m->extrefs.p[i].obj;
