@@ -24,12 +24,12 @@
 				(set-matrix1 (cdr mat) (+ i 1) fn)))))
 	(set-matrix1 mat 0 fn))
 
-(define(print-matrix mat)
+(define(print-matrix port mat)
 	(if (null? mat)
 		'()
 		((lambda()
-			(print (car mat) "\n")
-			(print-matrix (cdr mat))))))
+			(print port (car mat) "\n")
+			(print-matrix port (cdr mat))))))
 
 (define(next-column mat)
 	(if (null? mat)

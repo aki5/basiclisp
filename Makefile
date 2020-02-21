@@ -17,13 +17,17 @@ HFILES=\
 	basiclisp.h\
 
 OFILES=\
+	main.$(O)\
 	basiclisp.$(O)\
 
-basiclisp$(EXE): main.$(O) $(OFILES)
-	$(CC) $(LDFLAGS) -o $@ main.$(O) $(OFILES) $(LIBS)
+basiclisp$(EXE): $(OFILES)
+	$(CC) $(LDFLAGS) -o $@ $(OFILES) $(LIBS)
 
 fuzz$(EXE): fuzz.c basiclisp.c
 	$(CC) -O2 -fsanitize=address,undefined,fuzzer -o $@ fuzz.c basiclisp.c
+
+test: basiclisp$(EXE)
+	./basiclisp$(EXE) stdlib.scm matrix.scm matrix-test.scm test-external.scm
 
 linenoise.$O: linenoise/linenoise.c linenoise/linenoise.h
 	$(CC) $(CFLAGS) -c -o $@ linenoise/linenoise.c

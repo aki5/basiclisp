@@ -41,7 +41,7 @@ int
 LLVMFuzzerTestOneInput(const uint8_t *buf, size_t len)
 {
 	Mach m;
-	ref_t list;
+	lispref_t list;
 	size_t i;
 
 	memset(&m, 0, sizeof m);
