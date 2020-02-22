@@ -209,12 +209,12 @@ main(int argc, char *argv[])
 						}
 					}
 				} else {
+					fprintf(stderr, "extcall: not sure what's going on: %x\n", first);
 					for(LispRef np = c.m.expr; np != LISP_NIL; np = lispCdr(&c.m, np)){
 						printf(" ");
 						lispPrint1(&c.m, lispCar(&c.m, np), 1);
 					}
 					printf("\n");
-					fprintf(stderr, "extcall: not sure what's going on: %x\n", first);
 				}
 			}
 			c.m.expr = LISP_NIL;

@@ -1049,16 +1049,20 @@ again:
 					LispRef ref0, ref;
 					int ires;
 					int nterms;
-					m->expr = lispCdr(m, m->expr);
-					ref0 = lispCar(m, m->expr);
+					ref = lispCdr(m, m->expr);
+					ref0 = lispCar(m, ref);
 					if(lispIsNumber(m, ref0)){
 						ires = lispGetInt(m, ref0);
+					} else if(lispIsExtRef(m, ref0)){
+						// arithmetic on external object, escape.
+						lispGoto(m, LISP_STATE_CONTINUE);
+						return 1;
 					} else {
 						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 						lispReturn(m);
 						goto again;
 					}
-					m->expr = lispCdr(m, m->expr);
+					m->expr = lispCdr(m, ref);
 					nterms = 0;
 					while(m->expr != LISP_NIL){
 						nterms++;
