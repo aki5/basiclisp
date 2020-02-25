@@ -14,9 +14,9 @@ typedef struct Buffer Buffer;
 typedef struct Type Type;
 
 struct Type {
-	lispapplier_t *apply;
-	lispsetter_t *set;
-	lispgetter_t *get;
+	LispApplier *apply;
+	LispSetter *set;
+	LispGetter *get;
 };
 
 struct Context {

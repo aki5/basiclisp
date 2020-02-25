@@ -2,9 +2,9 @@
 typedef unsigned short LispRef;
 typedef unsigned int LispPort;
 typedef struct LispMachine LispMachine;
-typedef LispRef (lispapplier_t)(void *, void *, LispRef);
-typedef LispRef (lispgetter_t)(void *, void *, LispRef);
-typedef LispRef (lispsetter_t)(void *, void *, LispRef, LispRef);
+typedef LispRef (LispApplier)(void *, void *, LispRef);
+typedef LispRef (LispGetter)(void *, void *, LispRef);
+typedef LispRef (LispSetter)(void *, void *, LispRef, LispRef);
 
 // these are macros because enums are signed and these fiddle with the MSB.
 #define LISP_TAG_BIT ((LispRef)1<<(8*sizeof(LispRef)-1))
