@@ -230,6 +230,12 @@ lispIsPairOrNull(LispMachine *m, LispRef a)
 }
 
 int
+lispIsNull(LispMachine *m, LispRef a)
+{
+	return reftag(a) == LISP_TAG_PAIR && a == LISP_NIL;
+}
+
+int
 lispIsPair(LispMachine *m, LispRef a)
 {
 	return reftag(a) == LISP_TAG_PAIR && a != LISP_NIL;
@@ -1227,14 +1233,18 @@ again:
 					lispGoto(m, LISP_STATE_EVAL);
 					goto again;
 				} else if(blt == LISP_BUILTIN_PRINT1){
-					m->expr = lispCdr(m, m->expr);
-					m->reg2 = lispCar(m, m->expr);
-					m->expr = lispCdr(m, m->expr);
-					m->expr = lispCar(m, m->expr);
-					lispPrint1(m, m->expr, lispGetInt(m, m->reg2));
-					m->reg2 = LISP_NIL;
-					m->value = m->expr;
-					lispReturn(m);
+					LispRef rest = lispCdr(m, m->expr);
+					LispRef port = lispCar(m, rest);
+					rest = lispCdr(m, rest);
+					m->value = lispCar(m, rest);
+					if(lispIsExtRef(m, m->value)){
+						// escape extref printing
+						lispGoto(m, LISP_STATE_CONTINUE);
+						return 1;
+					} else {
+						lispPrint1(m, m->value, lispGetInt(m, port));
+						lispReturn(m);
+					}
 					goto again;
 				} else if(blt == LISP_BUILTIN_EVAL){
 					m->expr = lispCar(m, lispCdr(m, m->expr)); // expr = cdar expr

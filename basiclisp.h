@@ -5,6 +5,7 @@ typedef struct LispMachine LispMachine;
 typedef LispRef (LispApplier)(void *, void *, LispRef);
 typedef LispRef (LispGetter)(void *, void *, LispRef);
 typedef LispRef (LispSetter)(void *, void *, LispRef, LispRef);
+typedef LispRef (LispBinaryOp)(void *, LispRef, LispRef);
 
 // these are macros because enums are signed and these fiddle with the MSB.
 #define LISP_TAG_BIT ((LispRef)1<<(8*sizeof(LispRef)-1))
@@ -155,6 +156,7 @@ int lispIsNumber(LispMachine *m, LispRef a);
 int lispIsBuiltin(LispMachine *mach, LispRef a, int builtin);
 int lispIsExtRef(LispMachine *m, LispRef a);
 int lispIsPair(LispMachine *m, LispRef a);
+int lispIsNull(LispMachine *m, LispRef a);
 LispRef lispSymbol(LispMachine *m, char *str);
 LispRef lispBuiltin(LispMachine *m, int val);
 void lispDefine(LispMachine *m, LispRef sym, LispRef val);
