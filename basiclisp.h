@@ -167,3 +167,5 @@ int lispExtGet(LispMachine *m, LispRef ext, void **obj, void **type);
 
 int lispGetInt(LispMachine *m, LispRef num);
 LispRef lispNumber(LispMachine *m, int);
+
+LispRef lispCons(LispMachine *m, LispRef a, LispRef d);

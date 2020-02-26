@@ -596,7 +596,7 @@ lispNumber(LispMachine *m, int v)
 	abort();
 }
 
-static LispRef
+LispRef
 lispCons(LispMachine *m, LispRef a, LispRef d)
 {
 	LispRef ref;

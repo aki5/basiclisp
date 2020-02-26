@@ -237,6 +237,176 @@ exprNew(void *ctx, void *obj, LispRef args)
 	return lispBuiltin(&c->m, LISP_BUILTIN_ERROR);
 }
 
+static void
+extrefBinaryOp(Context *c)
+{
+	LispRef second = lispCdr(&c->m, c->m.expr);
+	LispRef third = lispCdr(&c->m, second);
+	second = lispCar(&c->m, second);
+	third = lispCar(&c->m, third);
+	void *obj;
+	Type *type;
+	if(lispExtGet(&c->m, second, &obj, (void**)&type) == 0 || lispExtGet(&c->m, third, &obj, (void**)&type) == 0){
+		if(type != NULL && type->equal != NULL)
+			c->m.value = (*type->equal)(&c, second, third);
+	} else {
+		c->m.value = lispBuiltin(&c->m, LISP_BUILTIN_FALSE);
+	}
+}
+
+void
+lispEvaluate(Context *context)
+{
+	LispMachine *m = &context->m;
+	lispCall(m, LISP_STATE_RETURN, LISP_STATE_EVAL);
+	while(lispStep(m) == 1){
+		m->value = lispBuiltin(m, LISP_BUILTIN_ERROR); // default to error up front.
+		LispRef first = lispCar(m, m->expr);
+		if(lispIsExtRef(m, first)){
+			// first element is an extref: it's an apply
+			LispRef second = lispCdr(m, m->expr);
+			void *obj;
+			Type *type;
+			lispExtGet(m, first, &obj, (void**)&type);
+			if(type != NULL && type->apply != NULL)
+				m->value = (*type->apply)(context, obj, second);
+		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_PRINT1)){
+			LispRef second = lispCdr(m, m->expr);
+			LispRef third = lispCdr(m, second);
+			second = lispCar(m, second);
+			third = lispCar(m, third);
+			if(lispIsExtRef(m, third)){
+				void *obj;
+				Type *type;
+				lispExtGet(m, third, &obj, (void**)&type);
+				if(type != NULL && type->print != NULL)
+					m->value = (*type->print)(context, second, third);
+			} else {
+				fprintf(stderr, "builtin-add fail\n");
+			}
+		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_SET)){
+			// it's a set.. ensure form is (set! ('prop extref) value)
+			// and call setter.
+			LispRef form = lispCdr(m, m->expr);
+			LispRef third = lispCdr(m, form);
+			form = lispCar(m, form);
+			if(lispIsPair(m, form)){
+				first = lispCar(m, form);
+				if(lispIsNumber(m, first) || lispIsSymbol(m, first)){
+					LispRef second = lispCdr(m, form);
+					if(lispIsPair(m, second) && lispIsPair(m, third)){
+						second = lispCar(m, second);
+						if(lispIsExtRef(m, second)){
+							third = lispCar(m, third);
+							void *obj;
+							Type *type;
+							lispExtGet(m, second, &obj, (void**)&type);
+							if(type != NULL && type->set != NULL)
+								m->value = (*type->set)(context, obj, first, third);
+						}
+					}
+				}
+			}
+		} else if(lispIsNumber(m, first) || lispIsSymbol(m, first)){
+			// it looks like a get, ensure form is ('prop extref) and
+			// call the getter.
+			LispRef second = lispCdr(m, m->expr);
+			if(lispIsPair(m, second)){
+				second = lispCar(m, second);
+				if(lispIsExtRef(m, second)){
+					void *obj;
+					Type *type;
+					lispExtGet(m, second, &obj, (void**)&type);
+					if(type != NULL && type->get != NULL)
+						m->value = (*type->get)(context, obj, first);
+				}
+			}
+		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_IF)){
+			// call both branches recursively on the system stack. there should
+			// be a way to do this on the LispMachine stack instead, but I am
+			// going to postpone that for the time being.
+			LispRef *condValue = lispRegister(m, m->value);
+			LispRef condRef = lispCdr(m, m->expr);
+			LispRef thenRef = lispCdr(m, condRef);
+			LispRef *elseReg = lispRegister(m, lispCar(m, lispCdr(m, thenRef)));
+			m->expr = lispCar(m, thenRef);
+			lispEvaluate(context);
+			m->expr = *elseReg;
+			lispRelease(m, elseReg);
+			LispRef *thenValue = lispRegister(m, m->value);
+			lispEvaluate(context);
+			LispRef *elseValue = lispRegister(m, m->value);
+			// TODO; compose *condValue, *thenValue and elseValue (m->value) into
+			// a ternary condValue ? thenValue : elseValue
+			lispRelease(m, condValue);
+			lispRelease(m, elseValue);
+			lispRelease(m, thenValue);
+		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_ISEQUAL)){
+			LispRef second = lispCdr(m, m->expr);
+			LispRef third = lispCdr(m, second);
+			second = lispCar(m, second);
+			third = lispCar(m, third);
+			void *obj;
+			Type *type;
+			if(lispExtGet(m, second, &obj, (void**)&type) == 0 || lispExtGet(m, third, &obj, (void**)&type) == 0){
+				if(type != NULL && type->equal != NULL)
+					m->value = (*type->equal)(context, second, third);
+			} else {
+				m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
+			}
+		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_ISLESS)){
+			LispRef second = lispCdr(m, m->expr);
+			LispRef third = lispCdr(m, second);
+			second = lispCar(m, second);
+			third = lispCar(m, third);
+			void *obj;
+			Type *type;
+			if(lispExtGet(m, second, &obj, (void**)&type) == 0 || lispExtGet(m, third, &obj, (void**)&type) == 0){
+				if(type != NULL && type->less != NULL)
+					m->value = (*type->less)(context, second, third);
+			} else {
+				m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
+			}
+		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_ADD)){
+			LispRef second = lispCdr(m, m->expr);
+			LispRef third = lispCdr(m, second);
+			second = lispCar(m, second);
+			third = lispCar(m, third);
+			if(lispIsExtRef(m, second) && lispIsExtRef(m, third)){
+				void *obj;
+				Type *type;
+				lispExtGet(m, second, &obj, (void**)&type);
+				if(type != NULL && type->add != NULL)
+					m->value = (*type->add)(context, second, third);
+			} else {
+				fprintf(stderr, "builtin-add fail\n");
+			}
+		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_MUL)){
+			LispRef second = lispCdr(m, m->expr);
+			LispRef third = lispCdr(m, second);
+			second = lispCar(m, second);
+			third = lispCar(m, third);
+			if(lispIsExtRef(m, second) && lispIsExtRef(m, third)){
+				void *obj;
+				Type *type;
+				lispExtGet(m, second, &obj, (void**)&type);
+				if(type != NULL && type->mul != NULL)
+					m->value = (*type->mul)(context, second, third);
+			} else {
+				fprintf(stderr, "builtin-mul fail\n");
+			}
+		} else {
+			fprintf(stderr, "extcall: not sure what's going on: %x\n", first);
+			for(LispRef np = m->expr; np != LISP_NIL; np = lispCdr(m, np)){
+				printf(" ");
+				lispPrint1(m, lispCar(m, np), 1);
+			}
+			printf("\n");
+		}
+	}
+	m->expr = LISP_NIL;
+	//m->value = LISP_NIL;
+}
 int
 main(int argc, char *argv[])
 {
@@ -282,136 +452,7 @@ main(int argc, char *argv[])
 			c.m.expr = lispParse(&c.m, 1);
 			if(lispIsError(&c.m, c.m.expr))
 				break;
-			lispCall(&c.m, LISP_STATE_RETURN, LISP_STATE_EVAL);
-			while(lispStep(&c.m) == 1){
-				c.m.value = lispBuiltin(&c.m, LISP_BUILTIN_ERROR); // default to error up front.
-				LispRef first = lispCar(&c.m, c.m.expr);
-				if(lispIsExtRef(&c.m, first)){
-					// first element is an extref: it's an apply
-					LispRef second = lispCdr(&c.m, c.m.expr);
-					void *obj;
-					Type *type;
-					lispExtGet(&c.m, first, &obj, (void**)&type);
-					if(type != NULL && type->apply != NULL)
-						c.m.value = (*type->apply)(&c, obj, second);
-				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_PRINT1)){
-					LispRef second = lispCdr(&c.m, c.m.expr);
-					LispRef third = lispCdr(&c.m, second);
-					second = lispCar(&c.m, second);
-					third = lispCar(&c.m, third);
-					if(lispIsExtRef(&c.m, third)){
-						void *obj;
-						Type *type;
-						lispExtGet(&c.m, third, &obj, (void**)&type);
-						if(type != NULL && type->print != NULL)
-							c.m.value = (*type->print)(&c, second, third);
-					} else {
-						fprintf(stderr, "builtin-add fail\n");
-					}
-				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_SET)){
-					// it's a set.. ensure form is (set! ('prop extref) value)
-					// and call setter.
-					LispRef form = lispCdr(&c.m, c.m.expr);
-					LispRef third = lispCdr(&c.m, form);
-					form = lispCar(&c.m, form);
-					if(lispIsPair(&c.m, form)){
-						first = lispCar(&c.m, form);
-						if(lispIsNumber(&c.m, first) || lispIsSymbol(&c.m, first)){
-							LispRef second = lispCdr(&c.m, form);
-							if(lispIsPair(&c.m, second) && lispIsPair(&c.m, third)){
-								second = lispCar(&c.m, second);
-								if(lispIsExtRef(&c.m, second)){
-									third = lispCar(&c.m, third);
-									void *obj;
-									Type *type;
-									lispExtGet(&c.m, second, &obj, (void**)&type);
-									if(type != NULL && type->set != NULL)
-										c.m.value = (*type->set)(&c, obj, first, third);
-								}
-							}
-						}
-					}
-				} else if(lispIsNumber(&c.m, first) || lispIsSymbol(&c.m, first)){
-					// it looks like a get, ensure form is ('prop extref) and
-					// call the getter.
-					LispRef second = lispCdr(&c.m, c.m.expr);
-					if(lispIsPair(&c.m, second)){
-						second = lispCar(&c.m, second);
-						if(lispIsExtRef(&c.m, second)){
-							void *obj;
-							Type *type;
-							lispExtGet(&c.m, second, &obj, (void**)&type);
-							if(type != NULL && type->get != NULL)
-								c.m.value = (*type->get)(&c, obj, first);
-						}
-					}
-				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_IF)){
-					fprintf(stderr, "builtin if with extref condition. ughs.\n");
-				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_ISEQUAL)){
-					LispRef second = lispCdr(&c.m, c.m.expr);
-					LispRef third = lispCdr(&c.m, second);
-					second = lispCar(&c.m, second);
-					third = lispCar(&c.m, third);
-					void *obj;
-					Type *type;
-					if(lispExtGet(&c.m, second, &obj, (void**)&type) == 0 || lispExtGet(&c.m, third, &obj, (void**)&type) == 0){
-						if(type != NULL && type->equal != NULL)
-							c.m.value = (*type->equal)(&c, second, third);
-					} else {
-						c.m.value = lispBuiltin(&c.m, LISP_BUILTIN_FALSE);
-					}
-				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_ISLESS)){
-					LispRef second = lispCdr(&c.m, c.m.expr);
-					LispRef third = lispCdr(&c.m, second);
-					second = lispCar(&c.m, second);
-					third = lispCar(&c.m, third);
-					void *obj;
-					Type *type;
-					if(lispExtGet(&c.m, second, &obj, (void**)&type) == 0 || lispExtGet(&c.m, third, &obj, (void**)&type) == 0){
-						if(type != NULL && type->less != NULL)
-							c.m.value = (*type->less)(&c, second, third);
-					} else {
-						c.m.value = lispBuiltin(&c.m, LISP_BUILTIN_FALSE);
-					}
-				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_ADD)){
-					LispRef second = lispCdr(&c.m, c.m.expr);
-					LispRef third = lispCdr(&c.m, second);
-					second = lispCar(&c.m, second);
-					third = lispCar(&c.m, third);
-					if(lispIsExtRef(&c.m, second) && lispIsExtRef(&c.m, third)){
-						void *obj;
-						Type *type;
-						lispExtGet(&c.m, second, &obj, (void**)&type);
-						if(type != NULL && type->add != NULL)
-							c.m.value = (*type->add)(&c, second, third);
-					} else {
-						fprintf(stderr, "builtin-add fail\n");
-					}
-				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_MUL)){
-					LispRef second = lispCdr(&c.m, c.m.expr);
-					LispRef third = lispCdr(&c.m, second);
-					second = lispCar(&c.m, second);
-					third = lispCar(&c.m, third);
-					if(lispIsExtRef(&c.m, second) && lispIsExtRef(&c.m, third)){
-						void *obj;
-						Type *type;
-						lispExtGet(&c.m, second, &obj, (void**)&type);
-						if(type != NULL && type->mul != NULL)
-							c.m.value = (*type->mul)(&c, second, third);
-					} else {
-						fprintf(stderr, "builtin-mul fail\n");
-					}
-				} else {
-					fprintf(stderr, "extcall: not sure what's going on: %x\n", first);
-					for(LispRef np = c.m.expr; np != LISP_NIL; np = lispCdr(&c.m, np)){
-						printf(" ");
-						lispPrint1(&c.m, lispCar(&c.m, np), 1);
-					}
-					printf("\n");
-				}
-			}
-			c.m.expr = LISP_NIL;
-			c.m.value = LISP_NIL;
+			lispEvaluate(&c);
 		}
 
 		fclose(fp);
