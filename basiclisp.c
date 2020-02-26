@@ -814,10 +814,13 @@ again:
 		return 0;
 	case LISP_STATE_EVAL:
 		if(lispIsAtom(m, m->expr)){
+			// atom evaluates to itself
 			m->value = m->expr;
 			lispReturn(m);
 			goto again;
 		} else if(lispIsSymbol(m, m->expr)){
+			// symbol evaluates to the looked up value in
+			// current environment
 			LispRef lst = m->envr;
 			while(lst != LISP_NIL){
 				LispRef pair = lispCar(m, lst);
@@ -837,12 +840,10 @@ again:
 			lispReturn(m);
 			goto again;
 		} else if(lispIsPair(m, m->expr)){
-			// form is (something), so at least we are applying something.
+			// form is (something), so this is 'application'
 			// handle special forms (quote, lambda, beta, if, define) before
-			// evaluating args.
-
-			// TODO: evaluating the head element here is a bit of a hack.
-
+			// evaluating arguments. start by evaluating the first element,
+			// which is frequently a lambda or a symbol.
 			LispRef head;
 			lispPush(m, m->expr);
 			m->expr = lispCar(m, m->expr);
@@ -857,8 +858,8 @@ again:
 				LispRef blt = lispGetBuiltin(m, head);
 				if(blt == LISP_BUILTIN_IF){
 					// (if cond then else)
-					m->expr = lispCdr(m, m->expr);
 					lispPush(m, m->expr);
+					m->expr = lispCdr(m, m->expr);
 					// evaluate condition recursively
 					m->expr = lispCar(m, m->expr);
 					lispCall(m, LISP_STATE_IF1, LISP_STATE_EVAL);
@@ -867,12 +868,21 @@ again:
 					// evaluate result as a tail-call, if condition
 					// evaluated to #f, skip over 'then' to 'else'.
 					m->expr = lispPop(m);
-					m->expr = lispCdr(m, m->expr);
-					if(m->value == lispBuiltin(m, LISP_BUILTIN_FALSE))
-						m->expr = lispCdr(m, m->expr);
-					m->expr = lispCar(m, m->expr);
-					lispGoto(m, LISP_STATE_EVAL);
-					goto again;
+					if(lispIsExtRef(m, m->value)){
+						// escape if condition is extref,
+						// if may still be a symbol in expr, so resolve it.
+						m->expr = lispCons(m, lispBuiltin(m, LISP_BUILTIN_IF), lispCdr(m, m->expr));
+						lispGoto(m, LISP_STATE_CONTINUE);
+						return 1;
+					} else {
+						m->expr = lispCdr(m, m->expr); // 'if' -> 'cond'
+						m->expr = lispCdr(m, m->expr); // 'cond' -> 'then'
+						if(m->value == lispBuiltin(m, LISP_BUILTIN_FALSE))
+							m->expr = lispCdr(m, m->expr); // 'then' -> 'else'
+						m->expr = lispCar(m, m->expr);
+						lispGoto(m, LISP_STATE_EVAL);
+						goto again;
+					}
 				}
 				if(blt == LISP_BUILTIN_BETA || blt == LISP_BUILTIN_CONTINUE){
 					// beta literal: return self.
@@ -1127,47 +1137,54 @@ again:
 					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_ISEQUAL){ // (equal? ...)
-					m->expr = lispCdr(m, m->expr);
-					LispRef ref0 = lispCar(m, m->expr);
-					m->expr = lispCdr(m, m->expr);
-					while(m->expr != LISP_NIL){
-						LispRef ref = lispCar(m, m->expr);
-						if(reftag(ref0) != reftag(ref)){
+					LispRef args = lispCdr(m, m->expr);
+					LispRef arg0 = lispCar(m, args);
+					args = lispCdr(m, args);
+					while(args != LISP_NIL){
+						LispRef arg = lispCar(m, args);
+						if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg)){
+							lispGoto(m, LISP_STATE_CONTINUE);
+							return 1;
+						} else if(reftag(arg0) != reftag(arg)){
 							m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 							goto eqdone;
-						} else if(lispIsNumber(m, ref0) && lispIsNumber(m, ref)){
-							if(lispGetInt(m, ref0) != lispGetInt(m, ref)){
+						} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg)){
+							if(lispGetInt(m, arg0) != lispGetInt(m, arg)){
 								m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 								goto eqdone;
 							}
-						} else if(lispIsPairOrNull(m, ref0) && lispIsPairOrNull(m, ref)){
-							if(ref0 != ref){
+						} else if(lispIsPairOrNull(m, arg0) && lispIsPairOrNull(m, arg)){
+							if(arg0 != arg){
 								m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 								goto eqdone;
 							}
 						} else {
-							fprintf(stderr, "equal?: unsupported types %d %d\n", reftag(ref0), reftag(ref));
+							fprintf(stderr, "equal?: unsupported types %d %d\n", reftag(arg0), reftag(arg));
 							m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 							lispReturn(m);
 							goto again;
 						}
-						m->expr = lispCdr(m, m->expr);
+						args = lispCdr(m, args);
 					}
 					m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
 				eqdone:
 					lispReturn(m);
 					goto again;
 				} else if(blt == LISP_BUILTIN_ISLESS){
-					m->expr = lispCdr(m, m->expr);
-					LispRef ref0 = lispCar(m, m->expr);
-					m->expr = lispCdr(m, m->expr);
-					LispRef ref1 = lispCar(m, m->expr);
+					LispRef args = lispCdr(m, m->expr);
+					LispRef arg0 = lispCar(m, args);
+					args = lispCdr(m, args);
+					LispRef arg1 = lispCar(m, args);
 					m->value = lispBuiltin(m, LISP_BUILTIN_FALSE); // default to false.
-					if(lispIsNumber(m, ref0) && lispIsNumber(m, ref1)){
-						if(lispGetInt(m, ref0) < lispGetInt(m, ref1))
+					if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg1)){
+						fprintf(stderr, "isless extref\n");
+						lispGoto(m, LISP_STATE_CONTINUE);
+						return 1;
+					} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg1)){
+						if(lispGetInt(m, arg0) < lispGetInt(m, arg1))
 							m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
-					} else if(lispIsSymbol(m, ref0) && lispIsSymbol(m, ref1)){
-						if(strcmp(strpointer(m, ref0), strpointer(m, ref1)) < 0)
+					} else if(lispIsSymbol(m, arg0) && lispIsSymbol(m, arg1)){
+						if(strcmp(strpointer(m, arg0), strpointer(m, arg1)) < 0)
 							m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
 					} else {
 						fprintf(stderr, "less?: unsupported types\n");

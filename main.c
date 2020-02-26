@@ -22,6 +22,8 @@ struct Type {
 	LispBinaryOp *add;
 	LispBinaryOp *mul;
 	LispBinaryOp *print;
+	LispBinaryOp *equal;
+	LispBinaryOp *less;
 };
 
 struct Context {
@@ -173,6 +175,22 @@ exprMul(void *ctx, LispRef left, LispRef right)
 	return exprBinaryOp(ctx, '*', left, right);
 }
 
+static LispRef
+exprEqual(void *ctx, LispRef left, LispRef right)
+{
+	Context *c = ctx;
+	if(lispIsExtRef(&c->m, left) && lispIsExtRef(&c->m, right)){
+		return exprBinaryOp(ctx, '=', left, right);
+	}
+	return lispBuiltin(&c->m, LISP_BUILTIN_FALSE);
+}
+
+static LispRef
+exprLess(void *ctx, LispRef left, LispRef right)
+{
+	return exprBinaryOp(ctx, '<', left, right);
+}
+
 void
 exprPrint1(LispMachine *m, int port, Expr *expr)
 {
@@ -244,6 +262,8 @@ main(int argc, char *argv[])
 	c.exprClass.apply = exprNew;
 	c.exprType.add = exprAdd;
 	c.exprType.mul = exprMul;
+	c.exprType.equal = exprEqual;
+	c.exprType.less = exprLess;
 	c.exprType.print = exprPrint;
 	c.exprSymbol = lispSymbol(&c.m, "expr");
 	LispRef exprClassRef = lispExtAlloc(&c.m);
@@ -324,6 +344,34 @@ main(int argc, char *argv[])
 							if(type != NULL && type->get != NULL)
 								c.m.value = (*type->get)(&c, obj, first);
 						}
+					}
+				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_IF)){
+					fprintf(stderr, "builtin if with extref condition. ughs.\n");
+				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_ISEQUAL)){
+					LispRef second = lispCdr(&c.m, c.m.expr);
+					LispRef third = lispCdr(&c.m, second);
+					second = lispCar(&c.m, second);
+					third = lispCar(&c.m, third);
+					void *obj;
+					Type *type;
+					if(lispExtGet(&c.m, second, &obj, (void**)&type) == 0 || lispExtGet(&c.m, third, &obj, (void**)&type) == 0){
+						if(type != NULL && type->equal != NULL)
+							c.m.value = (*type->equal)(&c, second, third);
+					} else {
+						c.m.value = lispBuiltin(&c.m, LISP_BUILTIN_FALSE);
+					}
+				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_ISLESS)){
+					LispRef second = lispCdr(&c.m, c.m.expr);
+					LispRef third = lispCdr(&c.m, second);
+					second = lispCar(&c.m, second);
+					third = lispCar(&c.m, third);
+					void *obj;
+					Type *type;
+					if(lispExtGet(&c.m, second, &obj, (void**)&type) == 0 || lispExtGet(&c.m, third, &obj, (void**)&type) == 0){
+						if(type != NULL && type->less != NULL)
+							c.m.value = (*type->less)(&c, second, third);
+					} else {
+						c.m.value = lispBuiltin(&c.m, LISP_BUILTIN_FALSE);
 					}
 				} else if(lispIsBuiltin(&c.m, first, LISP_BUILTIN_ADD)){
 					LispRef second = lispCdr(&c.m, c.m.expr);
