@@ -202,8 +202,8 @@ exprCond(void *ctx, LispRef cond, LispRef left, LispRef right)
 	Context *context = ctx;
 	LispMachine *m = &context->m;
 
-	// call both branches recursively on the system stack. there should
-	// be a way to do this on the LispMachine stack instead, but I am
+	// call both branches via the system stack. there should
+	// be a way to do this using the LispMachine stack instead, but I am
 	// going to postpone that for the time being.
 	LispRef *condValue = lispRegister(m, cond);
 	LispRef *elseReg = lispRegister(m, right);
@@ -214,9 +214,8 @@ exprCond(void *ctx, LispRef cond, LispRef left, LispRef right)
 	lispRelease(m, elseReg);
 	lispEvaluate(context);
 	LispRef *elseValue = lispRegister(m, m->value);
-	// TODO; compose *condValue, *thenValue and elseValue (m->value) into
-	// a ternary condValue ? thenValue : elseValue
 
+	// all need to be extrefs..
 	if(lispIsExtRef(m, *condValue) && lispIsExtRef(m, *thenValue) && lispIsExtRef(m, *elseValue)){
 		Expr *condExpr;
 		Type *condType;
@@ -226,14 +225,14 @@ exprCond(void *ctx, LispRef cond, LispRef left, LispRef right)
 		Type *leftType;
 		lispExtGet(m, *thenValue, (void**)&leftExpr, (void**)&leftType);
 
-		if(condType != leftType)
+		if(condType != leftType) // type of left must match cond
 			goto error;
 
 		Expr *rightExpr;
 		Type *rightType;
 		lispExtGet(m, *elseValue, (void**)&rightExpr, (void**)&rightType);
 
-		if(condType != rightType)
+		if(condType != rightType) // type of right must match cond (and left)
 			goto error;
 
 		// allocate and initialize node for the condition
@@ -257,7 +256,7 @@ error:
 	lispRelease(m, condValue);
 	lispRelease(m, elseValue);
 	lispRelease(m, thenValue);
-
+	fprintf(stderr, "exprCond: fail\n");
 	return lispBuiltin(m, LISP_BUILTIN_ERROR);
 }
 
@@ -392,7 +391,7 @@ lispEvaluate(Context *context)
 			}
 		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_IF)){
 			// we come here with condition evaluated (to an extref type!) while
-			// then and else are still un-evaluated. we call cond on the cond's
+			// then and else are still un-evaluated. we call ->cond on the
 			// extref type, which may do whatever it wants (including
 			// evaluating both then and else)
 			LispRef cond = m->value;
