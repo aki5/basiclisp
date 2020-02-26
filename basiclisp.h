@@ -6,6 +6,7 @@ typedef LispRef (LispApplier)(void *, void *, LispRef);
 typedef LispRef (LispGetter)(void *, void *, LispRef);
 typedef LispRef (LispSetter)(void *, void *, LispRef, LispRef);
 typedef LispRef (LispBinaryOp)(void *, LispRef, LispRef);
+typedef LispRef (LispTernaryOp)(void *, LispRef, LispRef, LispRef);
 
 // these are macros because enums are signed and these fiddle with the MSB.
 #define LISP_TAG_BIT ((LispRef)1<<(8*sizeof(LispRef)-1))

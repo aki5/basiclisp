@@ -24,6 +24,8 @@ struct Type {
 	LispBinaryOp *print;
 	LispBinaryOp *equal;
 	LispBinaryOp *less;
+
+	LispTernaryOp *cond;
 };
 
 struct Context {
@@ -47,6 +49,7 @@ struct Buffer {
 };
 
 struct Expr {
+	Expr *cond;
 	Expr *left;
 	Expr *right;
 	unsigned op;
@@ -191,6 +194,73 @@ exprLess(void *ctx, LispRef left, LispRef right)
 	return exprBinaryOp(ctx, '<', left, right);
 }
 
+void lispEvaluate(Context *context);
+
+static LispRef
+exprCond(void *ctx, LispRef cond, LispRef left, LispRef right)
+{
+	Context *context = ctx;
+	LispMachine *m = &context->m;
+
+	// call both branches recursively on the system stack. there should
+	// be a way to do this on the LispMachine stack instead, but I am
+	// going to postpone that for the time being.
+	LispRef *condValue = lispRegister(m, cond);
+	LispRef *elseReg = lispRegister(m, right);
+	m->expr = left;
+	lispEvaluate(context);
+	LispRef *thenValue = lispRegister(m, m->value);
+	m->expr = *elseReg;
+	lispRelease(m, elseReg);
+	lispEvaluate(context);
+	LispRef *elseValue = lispRegister(m, m->value);
+	// TODO; compose *condValue, *thenValue and elseValue (m->value) into
+	// a ternary condValue ? thenValue : elseValue
+
+	if(lispIsExtRef(m, *condValue) && lispIsExtRef(m, *thenValue) && lispIsExtRef(m, *elseValue)){
+		Expr *condExpr;
+		Type *condType;
+		lispExtGet(m, *condValue, (void**)&condExpr, (void**)&condType);
+
+		Expr *leftExpr;
+		Type *leftType;
+		lispExtGet(m, *thenValue, (void**)&leftExpr, (void**)&leftType);
+
+		if(condType != leftType)
+			goto error;
+
+		Expr *rightExpr;
+		Type *rightType;
+		lispExtGet(m, *elseValue, (void**)&rightExpr, (void**)&rightType);
+
+		if(condType != rightType)
+			goto error;
+
+		// allocate and initialize node for the condition
+		Expr *expr = malloc(sizeof expr[0]);
+		memset(expr, 0, sizeof expr[0]);
+		expr->cond = condExpr;
+		expr->left = leftExpr;
+		expr->right = rightExpr;
+		expr->op = '?';
+
+		LispRef exprRef = lispExtAlloc(m);
+		lispExtSet(m, exprRef, expr, leftType);
+
+		lispRelease(m, condValue);
+		lispRelease(m, elseValue);
+		lispRelease(m, thenValue);
+
+		return exprRef;
+	}
+error:
+	lispRelease(m, condValue);
+	lispRelease(m, elseValue);
+	lispRelease(m, thenValue);
+
+	return lispBuiltin(m, LISP_BUILTIN_ERROR);
+}
+
 void
 exprPrint1(LispMachine *m, int port, Expr *expr)
 {
@@ -260,7 +330,6 @@ lispEvaluate(Context *context)
 	LispMachine *m = &context->m;
 	lispCall(m, LISP_STATE_RETURN, LISP_STATE_EVAL);
 	while(lispStep(m) == 1){
-		m->value = lispBuiltin(m, LISP_BUILTIN_ERROR); // default to error up front.
 		LispRef first = lispCar(m, m->expr);
 		if(lispIsExtRef(m, first)){
 			// first element is an extref: it's an apply
@@ -322,25 +391,23 @@ lispEvaluate(Context *context)
 				}
 			}
 		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_IF)){
-			// call both branches recursively on the system stack. there should
-			// be a way to do this on the LispMachine stack instead, but I am
-			// going to postpone that for the time being.
-			LispRef *condValue = lispRegister(m, m->value);
-			LispRef condRef = lispCdr(m, m->expr);
-			LispRef thenRef = lispCdr(m, condRef);
-			LispRef *elseReg = lispRegister(m, lispCar(m, lispCdr(m, thenRef)));
-			m->expr = lispCar(m, thenRef);
-			lispEvaluate(context);
-			m->expr = *elseReg;
-			lispRelease(m, elseReg);
-			LispRef *thenValue = lispRegister(m, m->value);
-			lispEvaluate(context);
-			LispRef *elseValue = lispRegister(m, m->value);
-			// TODO; compose *condValue, *thenValue and elseValue (m->value) into
-			// a ternary condValue ? thenValue : elseValue
-			lispRelease(m, condValue);
-			lispRelease(m, elseValue);
-			lispRelease(m, thenValue);
+			// we come here with condition evaluated (to an extref type!) while
+			// then and else are still un-evaluated. we call cond on the cond's
+			// extref type, which may do whatever it wants (including
+			// evaluating both then and else)
+			LispRef cond = m->value;
+			LispRef left = lispCdr(m, lispCdr(m, m->expr)); // if -> cond -> then
+			LispRef right = lispCdr(m, left); // -> else
+			left = lispCar(m, left);
+			right = lispCar(m, right);
+			void *obj;
+			Type *type;
+			if(lispExtGet(m, cond, &obj, (void**)&type) == 0){
+				if(type != NULL && type->cond != NULL)
+					m->value = (*type->cond)(context, cond, left, right);
+			} else {
+				m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
+			}
 		} else if(lispIsBuiltin(m, first, LISP_BUILTIN_ISEQUAL)){
 			LispRef second = lispCdr(m, m->expr);
 			LispRef third = lispCdr(m, second);
@@ -435,6 +502,7 @@ main(int argc, char *argv[])
 	c.exprType.equal = exprEqual;
 	c.exprType.less = exprLess;
 	c.exprType.print = exprPrint;
+	c.exprType.cond = exprCond;
 	c.exprSymbol = lispSymbol(&c.m, "expr");
 	LispRef exprClassRef = lispExtAlloc(&c.m);
 	lispExtSet(&c.m, exprClassRef, NULL, &c.exprClass);

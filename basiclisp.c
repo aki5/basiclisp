@@ -1177,7 +1177,6 @@ again:
 					LispRef arg1 = lispCar(m, args);
 					m->value = lispBuiltin(m, LISP_BUILTIN_FALSE); // default to false.
 					if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg1)){
-						fprintf(stderr, "isless extref\n");
 						lispGoto(m, LISP_STATE_CONTINUE);
 						return 1;
 					} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg1)){
