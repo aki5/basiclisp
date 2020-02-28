@@ -105,7 +105,7 @@ struct LispMachine {
 		LispRef *ref;
 		size_t len;
 		size_t cap;
-	} idx, mem, copy;
+	} stringIndex, mem, copy;
 
 	struct {
 		char *p;
@@ -122,9 +122,11 @@ struct LispMachine {
 		size_t cap;
 	} extrefs;
 
-	char *tok;
-	size_t toklen;
-	size_t tokcap;
+	struct {
+		char *buf;
+		size_t len;
+		size_t cap;
+	} token;
 
 	int lineno;
 

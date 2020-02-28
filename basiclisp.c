@@ -110,7 +110,7 @@ lispBuiltin(LispMachine *m, int val)
 }
 
 static LispRef *
-pointer(LispMachine *m, LispRef ref)
+lispCellPointer(LispMachine *m, LispRef ref)
 {
 	size_t off = urefval(ref);
 	if(off <= 0 || off >= m->mem.len){
@@ -121,7 +121,7 @@ pointer(LispMachine *m, LispRef ref)
 }
 
 static char *
-strpointer(LispMachine *m, LispRef ref)
+lispStringPointer(LispMachine *m, LispRef ref)
 {
 	size_t off = urefval(ref);
 	if(off <= 0 || off >= m->strings.len){
@@ -134,7 +134,7 @@ strpointer(LispMachine *m, LispRef ref)
 static LispRef
 lispSetCar(LispMachine *m, LispRef base, LispRef obj)
 {
-	LispRef *p = pointer(m, base);
+	LispRef *p = lispCellPointer(m, base);
 	p[LISP_CAR_OFFSET] = obj;
 	return obj;
 }
@@ -142,7 +142,7 @@ lispSetCar(LispMachine *m, LispRef base, LispRef obj)
 static LispRef
 lispSetCdr(LispMachine *m, LispRef base, LispRef obj)
 {
-	LispRef *p = pointer(m, base);
+	LispRef *p = lispCellPointer(m, base);
 	p[LISP_CDR_OFFSET] = obj;
 	return obj;
 }
@@ -164,14 +164,14 @@ lispIsAtom(LispMachine *m, LispRef a)
 LispRef
 lispCar(LispMachine *m, LispRef base)
 {
-	LispRef *p = pointer(m, base);
+	LispRef *p = lispCellPointer(m, base);
 	return p[LISP_CAR_OFFSET];
 }
 
 LispRef
 lispCdr(LispMachine *m, LispRef base)
 {
-	LispRef *p = pointer(m, base);
+	LispRef *p = lispCellPointer(m, base);
 	return p[LISP_CDR_OFFSET];
 }
 
@@ -248,7 +248,7 @@ lispIsError(LispMachine *m, LispRef a)
 }
 
 static int
-iswhite(int c)
+isWhitespace(int c)
 {
 	switch(c){
 	case '\t': case '\n': case '\v': case '\f': case '\r': case ' ':
@@ -258,7 +258,7 @@ iswhite(int c)
 }
 
 static int
-isbreak(int c)
+isBreak(int c)
 {
 	switch(c){
 	case ';':
@@ -271,7 +271,7 @@ isbreak(int c)
 }
 
 static int
-ishexchar(int c)
+isHexadecimal(int c)
 {
 	switch(c){
 	case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
@@ -281,7 +281,7 @@ ishexchar(int c)
 }
 
 static int
-isnumchar(int c)
+isDecimal(int c)
 {
 	switch(c){
 	case '0': case '1': case '2': case '3': case '4':
@@ -293,38 +293,38 @@ isnumchar(int c)
 }
 
 static void
-tokappend(LispMachine *m, int ch)
+tokenAppend(LispMachine *m, int ch)
 {
-	if(m->toklen == m->tokcap){
-		m->tokcap = (m->tokcap == 0) ? 256 : 2*m->tokcap;
-		void *p = realloc(m->tok, m->tokcap);
+	if(m->token.len == m->token.cap){
+		m->token.cap = (m->token.cap == 0) ? 256 : 2*m->token.cap;
+		void *p = realloc(m->token.buf, m->token.cap);
 		if(p == NULL){
-			fprintf(stderr, "tokappend: realloc failed\n");
+			fprintf(stderr, "tokenAppend: realloc failed\n");
 			abort();
 		}
-		m->tok = p;
+		m->token.buf = p;
 	}
-	m->tok[m->toklen] = ch;
-	m->toklen++;
+	m->token.buf[m->token.len] = ch;
+	m->token.len++;
 }
 
 static void
-tokclear(LispMachine *m)
+tokenClear(LispMachine *m)
 {
-	m->toklen = 0;
+	m->token.len = 0;
 }
 
 static int
-lex(LispMachine *m)
+lispLex(LispMachine *m)
 {
 	int isinteger, ishex;
 	int ch, peekc;
 
 again:
-	tokclear(m);
+	tokenClear(m);
 	if((ch = m->ports[0].readbyte(m->ports[0].context)) == -1)
 		return -1;
-	if(iswhite(ch)){
+	if(isWhitespace(ch)){
 		if(ch == '\n')
 			m->lineno++;
 		goto again;
@@ -353,14 +353,14 @@ again:
 	case '5': case '6': case '7': case '8': case '9':
 		ishex = 0;
 		while(ch != -1){
-			if(!isnumchar(ch) && !(ishex && ishexchar(ch))){
-				if(isbreak(ch))
+			if(!isDecimal(ch) && !(ishex && isHexadecimal(ch))){
+				if(isBreak(ch))
 					break;
 				goto casesym;
 			}
 			if(ch == 'x')
 				ishex = 1;
-			tokappend(m, ch);
+			tokenAppend(m, ch);
 			ch = m->ports[0].readbyte(m->ports[0].context);
 		}
 		if(ch != -1)
@@ -405,7 +405,7 @@ again:
 				case 'f': ch = '\f'; break;
 				}
 			}
-			tokappend(m, ch);
+			tokenAppend(m, ch);
 			ch = m->ports[0].readbyte(m->ports[0].context);
 			if(ch == '\n')
 				m->lineno++;
@@ -415,8 +415,8 @@ again:
 	// symbol is any string of nonbreak characters not starting with a number
 	default:
 	casesym:
-		while(ch != -1 && !isbreak(ch)){
-			tokappend(m, ch);
+		while(ch != -1 && !isBreak(ch)){
+			tokenAppend(m, ch);
 			ch = m->ports[0].readbyte(m->ports[0].context);
 		}
 		m->ports[0].unreadbyte(ch, m->ports[0].context);
@@ -426,7 +426,7 @@ again:
 }
 
 static size_t
-nextpow2(size_t v)
+nextPow2(size_t v)
 {
 	v = v | (v >> 1);
 	v = v | (v >> 2);
@@ -449,7 +449,7 @@ lispAllocSymbol(LispMachine *m, char *str)
 		m->strings.len = 1;
 	size_t slen = strlen(str)+1;
 	while(m->strings.len+slen >= m->strings.cap){
-		m->strings.cap = nextpow2(m->strings.len+slen);
+		m->strings.cap = nextPow2(m->strings.len+slen);
 		void *p = realloc(m->strings.p, m->strings.cap * sizeof m->strings.p[0]);
 		if(p == NULL){
 			fprintf(stderr, "lispAllocSymbol: realloc failed\n");
@@ -521,13 +521,13 @@ indexInsert1(LispMachine *m, uint32_t hash, LispRef ref)
 {
 	size_t i, off;
 
-	for(i = 0; i < m->idx.cap; i++){
+	for(i = 0; i < m->stringIndex.cap; i++){
 		LispRef nref;
-		off = (hash + i) & (m->idx.cap - 1);
-		nref = m->idx.ref[off];
+		off = (hash + i) & (m->stringIndex.cap - 1);
+		nref = m->stringIndex.ref[off];
 		if(nref == LISP_NIL){
-			m->idx.ref[off] = ref;
-			m->idx.len++;
+			m->stringIndex.ref[off] = ref;
+			m->stringIndex.len++;
 			return 0;
 		}
 	}
@@ -539,23 +539,23 @@ indexInsert(LispMachine *m, uint32_t hash, LispRef ref)
 {
 	size_t i;
 
-	if(3*(m->idx.len/2) >= m->idx.cap){
+	if(3*(m->stringIndex.len/2) >= m->stringIndex.cap){
 		LispRef *old;
 		size_t oldcap;
 
-		old = m->idx.ref;
-		oldcap = m->idx.cap;
+		old = m->stringIndex.ref;
+		oldcap = m->stringIndex.cap;
 
-		m->idx.cap = m->idx.cap < 16 ? 16 : 2*m->idx.cap;
-		m->idx.ref = malloc(m->idx.cap * sizeof m->idx.ref[0]);
-		lispMemSet(m->idx.ref, LISP_NIL, m->idx.cap);
-		m->idx.len = 0;
+		m->stringIndex.cap = m->stringIndex.cap < 16 ? 16 : 2*m->stringIndex.cap;
+		m->stringIndex.ref = malloc(m->stringIndex.cap * sizeof m->stringIndex.ref[0]);
+		lispMemSet(m->stringIndex.ref, LISP_NIL, m->stringIndex.cap);
+		m->stringIndex.len = 0;
 		if(old != NULL){
 			for(i = 0; i < oldcap; i++){
 				LispRef oldref = old[i];
 				if(oldref != LISP_NIL){
 					uint32_t oldhash;
-					oldhash = fnv32a((char *)strpointer(m, oldref), 0);
+					oldhash = fnv32a((char *)lispStringPointer(m, oldref), 0);
 					if(indexInsert1(m, oldhash, oldref) == -1)
 						abort();
 				}
@@ -574,12 +574,12 @@ indexLookup(LispMachine *m, uint32_t hash, char *str)
 	LispRef ref;
 	size_t i, off;
 
-	for(i = 0; i < m->idx.cap; i++){
-		off = (hash + i) & (m->idx.cap - 1);
-		ref = m->idx.ref[off];
+	for(i = 0; i < m->stringIndex.cap; i++){
+		off = (hash + i) & (m->stringIndex.cap - 1);
+		ref = m->stringIndex.ref[off];
 		if(ref == LISP_NIL)
 			break;
-		if(!strcmp(str, (char *)strpointer(m, ref))){
+		if(!strcmp(str, (char *)lispStringPointer(m, ref))){
 			return ref;
 		}
 	}
@@ -630,8 +630,8 @@ lispParse(LispMachine *m, int justone)
 	int dot = 0;
 
 m->gclock++;
-	while((ltok = lex(m)) != -1){
-		tokappend(m, '\0');
+	while((ltok = lispLex(m)) != -1){
+		tokenAppend(m, '\0');
 		switch(ltok){
 		default:
 			//fprintf(stderr, "unknown token %d: '%c' '%s'\n", ltok, ltok, m->tok);
@@ -654,15 +654,15 @@ m->gclock++;
 			list = lispBuiltin(m, LISP_BUILTIN_ERROR);
 			goto done;
 		case LISP_TOK_INTEGER:
-			nval = lispNumber(m, strtol(m->tok, NULL, 0));
+			nval = lispNumber(m, strtol(m->token.buf, NULL, 0));
 			goto append;
 		case LISP_TOK_STRING:
 			nval = lispCons(m, lispBuiltin(m, LISP_BUILTIN_QUOTE),
-				lispCons(m, lispSymbol(m, m->tok),
+				lispCons(m, lispSymbol(m, m->token.buf),
 				LISP_NIL));
 			goto append;
 		case LISP_TOK_SYMBOL:
-			nval = lispSymbol(m, m->tok);
+			nval = lispSymbol(m, m->token.buf);
 		append:
 			if(justone){
 				list = nval;
@@ -742,7 +742,7 @@ lispPrint1(LispMachine *m, LispRef aref, LispPort port)
 		snprintf(buf, sizeof buf, "%zd", refval(aref));
 		break;
 	case LISP_TAG_SYMBOL:
-		snprintf(buf, sizeof buf, "%s", strpointer(m, aref));
+		snprintf(buf, sizeof buf, "%s", lispStringPointer(m, aref));
 		break;
 	}
 	lispWrite(m, port, (unsigned char *)buf, strlen(buf));
@@ -834,7 +834,7 @@ again:
 				lst = lispCdr(m, lst);
 			}
 			if(lst == LISP_NIL){
-				fprintf(stderr, "undefined symbol: %s\n", (char *)strpointer(m, m->expr));
+				fprintf(stderr, "undefined symbol: %s\n", (char *)lispStringPointer(m, m->expr));
 				m->value = m->expr; // undefined
 			}
 			lispReturn(m);
@@ -998,7 +998,7 @@ again:
 					if(lst != LISP_NIL)
 						lispSetCdr(m, pair, m->value);
 					else
-						fprintf(stderr, "set!: undefined symbol %s\n", (char *)strpointer(m, *sym));
+						fprintf(stderr, "set!: undefined symbol %s\n", (char *)lispStringPointer(m, *sym));
 					lispRelease(m, sym);
 					m->value = LISP_NIL;
 					lispReturn(m);
@@ -1183,7 +1183,7 @@ again:
 						if(lispGetInt(m, arg0) < lispGetInt(m, arg1))
 							m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
 					} else if(lispIsSymbol(m, arg0) && lispIsSymbol(m, arg1)){
-						if(strcmp(strpointer(m, arg0), strpointer(m, arg1)) < 0)
+						if(strcmp(lispStringPointer(m, arg0), lispStringPointer(m, arg1)) < 0)
 							m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
 					} else {
 						fprintf(stderr, "less?: unsupported types\n");
@@ -1310,7 +1310,7 @@ again:
 						}
 						lst = lispCdr(m, lst);
 					}
-					fprintf(stderr, "symbol %s not found in object\n", (char *)strpointer(m, head));
+					fprintf(stderr, "symbol %s not found in object\n", (char *)lispStringPointer(m, head));
 					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 					lispReturn(m);
 					goto again;
@@ -1639,7 +1639,7 @@ LispRef
 lispExtAlloc(LispMachine *m)
 {
 	if(m->extrefs.len == m->extrefs.cap){
-		m->extrefs.cap = nextpow2(m->extrefs.cap);
+		m->extrefs.cap = nextPow2(m->extrefs.cap);
 		void *p = realloc(m->extrefs.p, m->extrefs.cap * sizeof m->extrefs.p[0]);
 		if(p == NULL){
 			fprintf(stderr, "lispExtAlloc: realloc failed\n");
