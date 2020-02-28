@@ -1,5 +1,5 @@
-(define dim 7)
-(define mat1 (matrix dim dim 0))
+(let dim 7)
+(let mat1 (matrix dim dim 0))
 (set-matrix! mat1 (lambda(i j)(+ j (* dim i))))
 (print 1 "mat1:\n")
 (print-matrix 1 mat1)

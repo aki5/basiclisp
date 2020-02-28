@@ -14,7 +14,7 @@ static char *bltnames[] = {
 [LISP_BUILTIN_IF] = "if",
 [LISP_BUILTIN_BETA] = "beta",
 [LISP_BUILTIN_CONTINUE] = "continue",
-[LISP_BUILTIN_DEFINE] = "define",
+[LISP_BUILTIN_LET] = "let",
 [LISP_BUILTIN_CAPTURE] = "capture",
 [LISP_BUILTIN_LAMBDA] = "lambda",
 [LISP_BUILTIN_QUOTE] = "quote",
@@ -890,14 +890,14 @@ again:
 					lispReturn(m);
 					goto again;
 				}
-				if(blt == LISP_BUILTIN_DEFINE){
-					// (define sym val) -> args,
+				if(blt == LISP_BUILTIN_LET){
+					// (let sym val) -> args,
 					// current environment gets sym associated with val.
 					LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
 					LispRef *val = lispRegister(m, lispCdr(m, *sym));
 					*sym = lispCar(m, *sym);
 					if(lispIsPair(m, *sym)){
-						// scheme shorthand: (define (name args...) body1 body2...).
+						// scheme shorthand: (let (name args...) body1 body2...).
 						LispRef *tmp = lispRegister(m, lispCons(m, lispCdr(m, *sym), *val));
 						*val = lispCons(m, lispBuiltin(m, LISP_BUILTIN_LAMBDA), *tmp);
 						lispRelease(m, tmp);
@@ -909,9 +909,9 @@ again:
 					m->expr = *val;
 					lispRelease(m, sym);
 					lispRelease(m, val);
-					lispCall(m, LISP_STATE_DEFINE1, LISP_STATE_EVAL);
+					lispCall(m, LISP_STATE_LET1, LISP_STATE_EVAL);
 					goto again;
-	case LISP_STATE_DEFINE1:
+	case LISP_STATE_LET1:
 					// restore sym from stack, construct (sym . val)
 					sym = lispRegister(m, lispPop(m));
 					*sym = lispCons(m, *sym, m->value);
@@ -1275,9 +1275,9 @@ again:
 				// this is the accessor (getter/setter) for our "namespaces".
 				// it returns an entry from a function's environment, so that
 				// an object constructor can become as simple as
-				//		(define (vec3 x y z) (lambda()))
+				//		(let (vec3 x y z) (lambda()))
 				// which can then be used as
-				//		(define r0 (vec3 1 2 3))
+				//		(let r0 (vec3 1 2 3))
 				//		(+ ('x r0) ('y r0) ('z r0))
 				// note the prefix notation for field access. there is a
 				// special form in set! for this notation, so that
@@ -1609,7 +1609,7 @@ if(0)fprintf(stderr, "collected: from %zu to %zu\n", oldlen, m->mem.len);
 void
 lispInit(LispMachine *m)
 {
-	// install initial environment (define built-ins)
+	// install initial environment (let built-ins)
 	m->envr = lispCons(m, LISP_NIL, LISP_NIL);
 	for(size_t i = 0; i < LISP_NUM_BUILTINS; i++){
 		LispRef sym = lispSymbol(m, bltnames[i]);
