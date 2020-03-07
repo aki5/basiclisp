@@ -832,6 +832,51 @@ lispApplyIf(LispMachine *m)
 }
 
 int
+lispApplyLet(LispMachine *m)
+{
+	switch(lispGetBuiltin(m, m->inst)){
+	default:
+		abort();
+	case LISP_STATE_LET0:{
+			// (let sym val) -> args,
+			// current environment gets sym associated with val.
+			LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
+			LispRef *val = lispRegister(m, lispCdr(m, *sym));
+			*sym = lispCar(m, *sym);
+			if(lispIsPair(m, *sym)){
+				// scheme shorthand: (let (name args...) body1 body2...).
+				LispRef *tmp = lispRegister(m, lispCons(m, lispCdr(m, *sym), *val));
+				*val = lispCons(m, lispBuiltin(m, LISP_BUILTIN_LAMBDA), *tmp);
+				lispRelease(m, tmp);
+				*sym = lispCar(m, *sym);
+			} else {
+				*val = lispCar(m, *val);
+			}
+			lispPush(m, *sym);
+			m->expr = *val;
+			lispRelease(m, sym);
+			lispRelease(m, val);
+			lispCall(m, LISP_STATE_LET1, LISP_STATE_EVAL);
+		}
+		return 0;
+	case LISP_STATE_LET1:{
+			// restore sym from stack, construct (sym . val)
+			LispRef *sym = lispRegister(m, lispPop(m));
+			*sym = lispCons(m, *sym, m->value);
+			// push new (sym . val) just below current env head.
+			LispRef *env = lispRegister(m, lispCdr(m, m->envr));
+			*env = lispCons(m, *sym, *env);
+			lispSetCdr(m, m->envr, *env);
+			lispRelease(m, env);
+			lispRelease(m, sym);
+			lispReturn(m);
+		}
+		return 0;
+	}
+
+}
+
+int
 lispStep(LispMachine *m)
 {
 again:
@@ -845,6 +890,11 @@ again:
 	case LISP_STATE_IF0:
 	case LISP_STATE_IF1:
 		if(lispApplyIf(m) == 1)
+			return 1;
+		goto again;
+	case LISP_STATE_LET0:
+	case LISP_STATE_LET1:
+		if(lispApplyLet(m) == 1)
 			return 1;
 		goto again;
 	case LISP_STATE_CONTINUE:
@@ -910,37 +960,7 @@ again:
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_LET){
-					// (let sym val) -> args,
-					// current environment gets sym associated with val.
-					LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
-					LispRef *val = lispRegister(m, lispCdr(m, *sym));
-					*sym = lispCar(m, *sym);
-					if(lispIsPair(m, *sym)){
-						// scheme shorthand: (let (name args...) body1 body2...).
-						LispRef *tmp = lispRegister(m, lispCons(m, lispCdr(m, *sym), *val));
-						*val = lispCons(m, lispBuiltin(m, LISP_BUILTIN_LAMBDA), *tmp);
-						lispRelease(m, tmp);
-						*sym = lispCar(m, *sym);
-					} else {
-						*val = lispCar(m, *val);
-					}
-					lispPush(m, *sym);
-					m->expr = *val;
-					lispRelease(m, sym);
-					lispRelease(m, val);
-					lispCall(m, LISP_STATE_LET1, LISP_STATE_EVAL);
-					goto again;
-	case LISP_STATE_LET1:
-					// restore sym from stack, construct (sym . val)
-					sym = lispRegister(m, lispPop(m));
-					*sym = lispCons(m, *sym, m->value);
-					// push new (sym . val) just below current env head.
-					LispRef *env = lispRegister(m, lispCdr(m, m->envr));
-					*env = lispCons(m, *sym, *env);
-					lispSetCdr(m, m->envr, *env);
-					lispRelease(m, env);
-					lispRelease(m, sym);
-					lispReturn(m);
+					lispGoto(m, LISP_STATE_LET0);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_SET){
