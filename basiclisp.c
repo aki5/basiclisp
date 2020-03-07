@@ -877,6 +877,107 @@ lispApplyLet(LispMachine *m)
 }
 
 int
+lispApplySet(LispMachine *m)
+{
+	switch(lispGetBuiltin(m, m->inst)){
+	default:
+		abort();
+	case LISP_STATE_SET0:{
+			// (set! sym val) -> args,
+			// current environment gets sym associated with val.
+			LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
+			LispRef *val = lispRegister(m, lispCdr(m, *sym));
+			*sym = lispCar(m, *sym);
+			if(lispIsPair(m, *sym)){
+				// setter for our object system: (set! ('field obj) value).
+				// since set is a special form, we must explicitly evaluate
+				// the list elements (but not call apply)
+				lispPush(m, *val);
+				// set expr to ('field obj) and eval the list (no apply)
+				m->expr = *sym;
+				lispRelease(m, sym);
+				lispRelease(m, val);
+				lispCall(m, LISP_STATE_SET1, LISP_STATE_LISTEVAL);
+				return 0;
+			} else {
+				*val = lispCar(m, *val);
+				lispPush(m, *sym);
+				m->expr = *val;
+				lispRelease(m, sym);
+				lispRelease(m, val);
+				lispCall(m, LISP_STATE_SET2, LISP_STATE_EVAL);
+				return 0;
+			}
+		}
+		abort();
+	case LISP_STATE_SET1:{
+			LispRef *val = lispRegister(m, lispPop(m));
+			LispRef *sym = lispRegister(m, m->value);
+			*val = lispCar(m, *val);
+			lispPush(m, *sym);
+			m->expr = *val;
+			lispRelease(m, sym);
+			lispRelease(m, val);
+			lispCall(m, LISP_STATE_SET2, LISP_STATE_EVAL);
+			return 0;
+		}
+	case LISP_STATE_SET2:{
+			// restore sym from stack, construct (sym . val)
+			LispRef *sym = lispRegister(m, lispPop(m));
+			LispRef lst;
+			if(lispIsPair(m, *sym)){
+				LispRef beta = lispCar(m, lispCdr(m, *sym));
+				if(lispIsExtRef(m, beta)){
+					// it's (10 buf) form, ie. buffer indexing
+					// assemble a form (set! (10 buf) value) and call/ext
+					m->expr = lispCons(m, m->value, LISP_NIL);
+					m->expr = lispCons(m, *sym, m->expr);
+					m->expr = lispCons(m, lispBuiltin(m, LISP_BUILTIN_SET), m->expr);
+					lispRelease(m, sym);
+					lispGoto(m, LISP_STATE_CONTINUE);
+					return 1;
+				}
+				LispRef betahead = lispCar(m, beta);
+				if(lispIsBuiltin(m, betahead, LISP_BUILTIN_BETA)){
+					// it's ('field obj) form, ie. object access.
+					// set environment scan to start from beta's captured environment.
+					lst = lispCdr(m, lispCdr(m, beta));
+					*sym = lispCar(m, *sym);
+				} else {
+					// else it's unsupported form
+					fprintf(stderr, "set!: unsupported form in first argument\n");
+					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+					lispRelease(m, sym);
+					lispReturn(m);
+					return 0;
+				}
+			} else {
+				lst = m->envr;
+			}
+			LispRef pair;
+			while(lst != LISP_NIL){
+				pair = lispCar(m, lst);
+				if(lispIsPair(m, pair)){
+					LispRef key = lispCar(m, pair);
+					if(key == *sym)
+						break;
+				}
+				lst = lispCdr(m, lst);
+			}
+			if(lst != LISP_NIL)
+				lispSetCdr(m, pair, m->value);
+			else
+				fprintf(stderr, "set!: undefined symbol %s\n", (char *)lispStringPointer(m, *sym));
+			lispRelease(m, sym);
+			m->value = LISP_NIL;
+			lispReturn(m);
+			return 0;
+		}
+	}
+	abort();
+}
+
+int
 lispStep(LispMachine *m)
 {
 again:
@@ -895,6 +996,12 @@ again:
 	case LISP_STATE_LET0:
 	case LISP_STATE_LET1:
 		if(lispApplyLet(m) == 1)
+			return 1;
+		goto again;
+	case LISP_STATE_SET0:
+	case LISP_STATE_SET1:
+	case LISP_STATE_SET2:
+		if(lispApplySet(m) == 1)
 			return 1;
 		goto again;
 	case LISP_STATE_CONTINUE:
@@ -964,83 +1071,7 @@ again:
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_SET){
-					// (set! sym val) -> args,
-					// current environment gets sym associated with val.
-					LispRef *sym = lispRegister(m, lispCdr(m, m->expr));
-					LispRef *val = lispRegister(m, lispCdr(m, *sym));
-					*sym = lispCar(m, *sym);
-					if(lispIsPair(m, *sym)){
-						// setter for our object system: (set! ('field obj) value).
-						// since set is a special form, we must explicitly evaluate
-						// the list elements (but not call apply)
-						lispPush(m, *val);
-						// set expr to ('field obj) and eval the list (no apply)
-						m->expr = *sym;
-						lispRelease(m, sym);
-						lispRelease(m, val);
-						lispCall(m, LISP_STATE_SET1, LISP_STATE_LISTEVAL);
-						goto again;
-	case LISP_STATE_SET1:
-						val = lispRegister(m, lispPop(m));
-						sym = lispRegister(m, m->value);
-					}
-					*val = lispCar(m, *val);
-					lispPush(m, *sym);
-					m->expr = *val;
-					lispRelease(m, sym);
-					lispRelease(m, val);
-					lispCall(m, LISP_STATE_SET2, LISP_STATE_EVAL);
-					goto again;
-	case LISP_STATE_SET2:
-					// restore sym from stack, construct (sym . val)
-					sym = lispRegister(m, lispPop(m));
-					LispRef lst;
-					if(lispIsPair(m, *sym)){
-						LispRef beta = lispCar(m, lispCdr(m, *sym));
-						if(lispIsExtRef(m, beta)){
-							// it's (10 buf) form, ie. buffer indexing
-							// assemble a form (set! (10 buf) value) and call/ext
-							m->expr = lispCons(m, m->value, LISP_NIL);
-							m->expr = lispCons(m, *sym, m->expr);
-							m->expr = lispCons(m, lispBuiltin(m, LISP_BUILTIN_SET), m->expr);
-							lispRelease(m, sym);
-							lispGoto(m, LISP_STATE_CONTINUE);
-							return 1;
-						}
-						LispRef betahead = lispCar(m, beta);
-						if(lispIsBuiltin(m, betahead, LISP_BUILTIN_BETA)){
-							// it's ('field obj) form, ie. object access.
-							// set environment scan to start from beta's captured environment.
-							lst = lispCdr(m, lispCdr(m, beta));
-							*sym = lispCar(m, *sym);
-						} else {
-							// else it's unsupported form
-							fprintf(stderr, "set!: unsupported form in first argument\n");
-							m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-							lispRelease(m, sym);
-							lispReturn(m);
-							goto again;
-						}
-					} else {
-						lst = m->envr;
-					}
-					LispRef pair;
-					while(lst != LISP_NIL){
-						pair = lispCar(m, lst);
-						if(lispIsPair(m, pair)){
-							LispRef key = lispCar(m, pair);
-							if(key == *sym)
-								break;
-						}
-						lst = lispCdr(m, lst);
-					}
-					if(lst != LISP_NIL)
-						lispSetCdr(m, pair, m->value);
-					else
-						fprintf(stderr, "set!: undefined symbol %s\n", (char *)lispStringPointer(m, *sym));
-					lispRelease(m, sym);
-					m->value = LISP_NIL;
-					lispReturn(m);
+					lispGoto(m, LISP_STATE_SET0);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_CAPTURE){
