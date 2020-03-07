@@ -1,5 +1,5 @@
 
-typedef unsigned short LispRef;
+typedef unsigned int LispRef;
 typedef unsigned int LispPort;
 typedef struct LispMachine LispMachine;
 typedef LispRef (LispApplier)(void *, void *, LispRef);
@@ -42,6 +42,7 @@ enum {
 	LISP_BUILTIN_CAR,
 	LISP_BUILTIN_CDR,
 	LISP_BUILTIN_EVAL,
+
 	// arithmetic
 	LISP_BUILTIN_ADD,
 	LISP_BUILTIN_SUB,
@@ -52,6 +53,7 @@ enum {
 	LISP_BUILTIN_BITXOR,
 	LISP_BUILTIN_BITNOT,
 	LISP_BUILTIN_REM,
+
 	// predicates
 	LISP_BUILTIN_ISPAIR,
 	LISP_BUILTIN_ISEQUAL,
@@ -59,8 +61,10 @@ enum {
 	LISP_BUILTIN_ISERROR,
 	LISP_BUILTIN_TRUE,
 	LISP_BUILTIN_FALSE,
+
 	// io
 	LISP_BUILTIN_PRINT1,
+
 	// error
 	LISP_BUILTIN_ERROR,
 	LISP_NUM_BUILTINS,
@@ -76,11 +80,12 @@ enum {
 	LISP_STATE_SET2,
 	LISP_STATE_RETURN,
 	LISP_STATE_EVAL,
+	LISP_STATE_IF0,
 	LISP_STATE_IF1,
 	LISP_STATE_LISTEVAL,
 	LISP_STATE_LISTEVAL1,
 	LISP_STATE_LISTEVAL2,
-	LISP_STATE_HEAD1,
+	LISP_STATE_SPECIAL_FORMS,
 
 };
 

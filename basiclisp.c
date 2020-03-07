@@ -797,6 +797,41 @@ lispDefine(LispMachine *m, LispRef sym, LispRef val)
 }
 
 int
+lispApplyIf(LispMachine *m)
+{
+	switch(lispGetBuiltin(m, m->inst)){
+	default:
+		abort();
+	case LISP_STATE_IF0:
+		// (if cond then else)
+		lispPush(m, m->expr);
+		// evaluate condition recursively, return to IF1.
+		m->expr = lispCar(m, lispCdr(m, m->expr));
+		lispCall(m, LISP_STATE_IF1, LISP_STATE_EVAL);
+		return 0;
+	case LISP_STATE_IF1:
+		// evaluate result as a tail-call, if condition
+		// evaluated to #f, skip over 'then' to 'else'.
+		m->expr = lispPop(m);
+		if(lispIsExtRef(m, m->value)){
+			// escape if condition is extref,
+			// if may still be a symbol in expr, so resolve it.
+			m->expr = lispCons(m, lispBuiltin(m, LISP_BUILTIN_IF), lispCdr(m, m->expr));
+			lispGoto(m, LISP_STATE_CONTINUE);
+			return 1;
+		} else {
+			m->expr = lispCdr(m, m->expr); // 'if' -> 'cond'
+			m->expr = lispCdr(m, m->expr); // 'cond' -> 'then'
+			if(m->value == lispBuiltin(m, LISP_BUILTIN_FALSE))
+				m->expr = lispCdr(m, m->expr); // 'then' -> 'else'
+			m->expr = lispCar(m, m->expr);
+			lispGoto(m, LISP_STATE_EVAL);
+			return 0;
+		}
+	}
+}
+
+int
 lispStep(LispMachine *m)
 {
 again:
@@ -807,6 +842,11 @@ again:
 	switch(lispGetBuiltin(m, m->inst)){
 	default:
 		fprintf(stderr, "lispStep: invalid instruction %zd, bailing out.\n", refval(m->inst));
+	case LISP_STATE_IF0:
+	case LISP_STATE_IF1:
+		if(lispApplyIf(m) == 1)
+			return 1;
+		goto again;
 	case LISP_STATE_CONTINUE:
 		lispReturn(m);
 		goto again;
@@ -841,48 +881,27 @@ again:
 			goto again;
 		} else if(lispIsPair(m, m->expr)){
 			// form is (something), so this is 'application'
-			// handle special forms (quote, lambda, beta, if, define) before
-			// evaluating arguments. start by evaluating the first element,
-			// which is frequently a lambda or a symbol.
+			// evaluate list head first, it is typically a lambda or a symbol.
+			// then see if it's a special form (quote, lambda, beta, if, define) 
 			LispRef head;
 			lispPush(m, m->expr);
 			m->expr = lispCar(m, m->expr);
-			lispCall(m, LISP_STATE_HEAD1, LISP_STATE_EVAL);
+			lispCall(m, LISP_STATE_SPECIAL_FORMS, LISP_STATE_EVAL);
 			goto again;
-	case LISP_STATE_HEAD1:
-			head = m->value;
+		}
+	case LISP_STATE_SPECIAL_FORMS:{
+			// list head is evaluated in m->value, rest of the list is
+			// un-evaluated.
+			LispRef head = m->value;
 			m->value = LISP_NIL;
 			m->expr = lispPop(m);
 
+			// handle special forms.
 			if(lispIsBuiltinTag(m, head)){
 				LispRef blt = lispGetBuiltin(m, head);
 				if(blt == LISP_BUILTIN_IF){
-					// (if cond then else)
-					lispPush(m, m->expr);
-					m->expr = lispCdr(m, m->expr);
-					// evaluate condition recursively
-					m->expr = lispCar(m, m->expr);
-					lispCall(m, LISP_STATE_IF1, LISP_STATE_EVAL);
+					lispGoto(m, LISP_STATE_IF0);
 					goto again;
-	case LISP_STATE_IF1:
-					// evaluate result as a tail-call, if condition
-					// evaluated to #f, skip over 'then' to 'else'.
-					m->expr = lispPop(m);
-					if(lispIsExtRef(m, m->value)){
-						// escape if condition is extref,
-						// if may still be a symbol in expr, so resolve it.
-						m->expr = lispCons(m, lispBuiltin(m, LISP_BUILTIN_IF), lispCdr(m, m->expr));
-						lispGoto(m, LISP_STATE_CONTINUE);
-						return 1;
-					} else {
-						m->expr = lispCdr(m, m->expr); // 'if' -> 'cond'
-						m->expr = lispCdr(m, m->expr); // 'cond' -> 'then'
-						if(m->value == lispBuiltin(m, LISP_BUILTIN_FALSE))
-							m->expr = lispCdr(m, m->expr); // 'then' -> 'else'
-						m->expr = lispCar(m, m->expr);
-						lispGoto(m, LISP_STATE_EVAL);
-						goto again;
-					}
 				}
 				if(blt == LISP_BUILTIN_BETA || blt == LISP_BUILTIN_CONTINUE){
 					// beta literal: return self.
