@@ -796,8 +796,8 @@ lispDefine(LispMachine *m, LispRef sym, LispRef val)
 	lispRelease(m, env);
 }
 
-int
-lispApplyIf(LispMachine *m)
+static int
+lispEvalIf(LispMachine *m)
 {
 	switch(lispGetBuiltin(m, m->inst)){
 	default:
@@ -831,8 +831,8 @@ lispApplyIf(LispMachine *m)
 	}
 }
 
-int
-lispApplyLet(LispMachine *m)
+static int
+lispEvalLet(LispMachine *m)
 {
 	switch(lispGetBuiltin(m, m->inst)){
 	default:
@@ -876,8 +876,8 @@ lispApplyLet(LispMachine *m)
 
 }
 
-int
-lispApplySet(LispMachine *m)
+static int
+lispEvalSet(LispMachine *m)
 {
 	switch(lispGetBuiltin(m, m->inst)){
 	default:
@@ -897,7 +897,7 @@ lispApplySet(LispMachine *m)
 				m->expr = *sym;
 				lispRelease(m, sym);
 				lispRelease(m, val);
-				lispCall(m, LISP_STATE_SET1, LISP_STATE_LISTEVAL);
+				lispCall(m, LISP_STATE_SET1, LISP_STATE_LISTEVAL0);
 				return 0;
 			} else {
 				*val = lispCar(m, *val);
@@ -977,6 +977,84 @@ lispApplySet(LispMachine *m)
 	abort();
 }
 
+static int
+lispEval(LispMachine *m)
+{
+	switch(lispGetBuiltin(m, m->inst)){
+	default:
+		abort();
+	case LISP_STATE_LISTEVAL0:{
+			LispRef *state;
+			// construct initial evaluation state: (expr-cell . value-cell)
+			state = &m->reg2;
+			m->reg3 = lispCons(m, LISP_NIL, LISP_NIL); // first "value-cell"
+			lispPush(m, m->reg3);
+			*state = lispCons(m, m->expr, m->reg3); // construct evaluation state
+			lispPush(m, *state);
+			m->reg3 = m->expr;
+			goto listeval_first;
+	case LISP_STATE_LISTEVAL1:
+			state = &m->reg2;
+			*state = lispCar(m, m->stack);
+			// store new m->value to value-cell.
+			lispSetCar(m, lispCdr(m, *state), m->value);
+			// load expr-cell to reg3.
+			m->reg3 = lispCar(m, *state); // expr-cell = car(state)
+listeval_first:
+			if(lispIsPair(m, m->reg3)){
+				// load new expr from expr-cell and set expr-cell to next expr.
+				m->expr = lispCar(m, m->reg3); // expr = (car expr-cell)
+				m->reg3 = lispCdr(m, m->reg3); // reg3 = (cdr expr-cell)
+				lispSetCar(m, *state, m->reg3); //  car(state) = (cdr expr-cell)
+
+				// allocate new value-cell, link cdr of current value-cell to it and set value-cell to the new one.
+				m->reg4 = lispCons(m, LISP_NIL, LISP_NIL);
+				m->reg3 = lispCdr(m, *state); // reg3 = value-cell ; cdr(state)
+				lispSetCdr(m, m->reg3, m->reg4); // cdr(cdr state) = reg4, cdr(value-cell) = reg4
+				lispSetCdr(m, *state, m->reg4); // value-cell = reg4
+
+				// clean up registers, mainly for gc.
+				*state = LISP_NIL;
+				m->reg3 = LISP_NIL;
+				m->reg4 = LISP_NIL;
+				// call "apply" on the current expr and have it return to this case.
+				lispCall(m, LISP_STATE_LISTEVAL1, LISP_STATE_EVAL);
+				return 0;
+			}
+			// this following bit is non-standard, it allows one to call a function
+			// with the notation (fn . args) or (fn arg1 arg2 . rest), effectively
+			// splicing a list 'args' in to the argument list, analogous to how
+			// varargs are declared in standard scheme functions. by allowing the
+			// dotted notation for apply, there is no need an apply built-in.
+			// unfortunately, of course the dotted tail must not be a literal list,
+			// so defining apply as a function is still going to be necessary.
+			if(m->reg3 != LISP_NIL){
+				m->expr = m->reg3;
+				lispSetCar(m, *state, LISP_NIL);
+				*state = LISP_NIL;
+				m->reg3 = LISP_NIL;
+				m->reg4 = LISP_NIL;
+				lispCall(m, LISP_STATE_LISTEVAL2, LISP_STATE_EVAL);
+				return 0;
+	case LISP_STATE_LISTEVAL2:
+				state = &m->reg2;
+				*state = lispCar(m, m->stack);
+				// store new m->value to the rest of value chain.
+				m->reg3 = lispCdr(m, *state);
+				lispSetCdr(m, m->reg3, m->value);
+			}
+
+			*state = LISP_NIL;
+			m->reg3 = LISP_NIL;
+			m->reg4 = LISP_NIL;
+			lispPop(m);
+			m->value = lispCdr(m, lispPop(m));
+			lispReturn(m);
+			return 0;
+		}
+	}
+}
+
 int
 lispStep(LispMachine *m)
 {
@@ -990,18 +1068,24 @@ again:
 		fprintf(stderr, "lispStep: invalid instruction %zd, bailing out.\n", refval(m->inst));
 	case LISP_STATE_IF0:
 	case LISP_STATE_IF1:
-		if(lispApplyIf(m) == 1)
+		if(lispEvalIf(m) == 1)
 			return 1;
 		goto again;
 	case LISP_STATE_LET0:
 	case LISP_STATE_LET1:
-		if(lispApplyLet(m) == 1)
+		if(lispEvalLet(m) == 1)
 			return 1;
 		goto again;
 	case LISP_STATE_SET0:
 	case LISP_STATE_SET1:
 	case LISP_STATE_SET2:
-		if(lispApplySet(m) == 1)
+		if(lispEvalSet(m) == 1)
+			return 1;
+		goto again;
+	case LISP_STATE_LISTEVAL0:
+	case LISP_STATE_LISTEVAL1:
+	case LISP_STATE_LISTEVAL2:
+		if(lispEval(m) == 1)
 			return 1;
 		goto again;
 	case LISP_STATE_CONTINUE:
@@ -1053,7 +1137,7 @@ again:
 			m->value = LISP_NIL;
 			m->expr = lispPop(m);
 
-			// handle special forms.
+			// detect special forms.
 			if(lispIsBuiltinTag(m, head)){
 				LispRef blt = lispGetBuiltin(m, head);
 				if(blt == LISP_BUILTIN_IF){
@@ -1124,7 +1208,7 @@ again:
 
 			// at this point we know it is a list, and that it is
 			// not a special form. evaluate args, then apply.
-			lispCall(m, LISP_STATE_APPLY, LISP_STATE_LISTEVAL);
+			lispCall(m, LISP_STATE_APPLY, LISP_STATE_LISTEVAL0);
 			goto again;
 	case LISP_STATE_APPLY:
 			m->expr = m->value;
@@ -1506,76 +1590,6 @@ again:
 		m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 		lispReturn(m);
 		goto again;
-	case LISP_STATE_LISTEVAL:
-		{
-			LispRef *state;
-			// construct initial evaluation state: (expr-cell . value-cell)
-			state = &m->reg2;
-			m->reg3 = lispCons(m, LISP_NIL, LISP_NIL); // first "value-cell"
-			lispPush(m, m->reg3);
-			*state = lispCons(m, m->expr, m->reg3); // construct evaluation state
-			lispPush(m, *state);
-			m->reg3 = m->expr;
-			goto listeval_first;
-	case LISP_STATE_LISTEVAL1:
-			state = &m->reg2;
-			*state = lispCar(m, m->stack);
-			// store new m->value to value-cell.
-			lispSetCar(m, lispCdr(m, *state), m->value);
-			// load expr-cell to reg3.
-			m->reg3 = lispCar(m, *state); // expr-cell = car(state)
-listeval_first:
-			if(lispIsPair(m, m->reg3)){
-				// load new expr from expr-cell and set expr-cell to next expr.
-				m->expr = lispCar(m, m->reg3); // expr = (car expr-cell)
-				m->reg3 = lispCdr(m, m->reg3); // reg3 = (cdr expr-cell)
-				lispSetCar(m, *state, m->reg3); //  car(state) = (cdr expr-cell)
-
-				// allocate new value-cell, link cdr of current value-cell to it and set value-cell to the new one.
-				m->reg4 = lispCons(m, LISP_NIL, LISP_NIL);
-				m->reg3 = lispCdr(m, *state); // reg3 = value-cell ; cdr(state)
-				lispSetCdr(m, m->reg3, m->reg4); // cdr(cdr state) = reg4, cdr(value-cell) = reg4
-				lispSetCdr(m, *state, m->reg4); // value-cell = reg4
-
-				// clean up registers, mainly for gc.
-				*state = LISP_NIL;
-				m->reg3 = LISP_NIL;
-				m->reg4 = LISP_NIL;
-				// call "apply" on the current expr and have it return to this case.
-				lispCall(m, LISP_STATE_LISTEVAL1, LISP_STATE_EVAL);
-				goto again;
-			}
-			// this following bit is non-standard, it allows one to call a function
-			// with the notation (fn . args) or (fn arg1 arg2 . rest), effectively
-			// splicing a list 'args' in to the argument list, analogous to how
-			// varargs are declared in standard scheme functions. by allowing the
-			// dotted notation for apply, there is no need an apply built-in.
-			// unfortunately, of course the dotted tail must not be a literal list,
-			// so defining apply as a function is still going to be necessary.
-			if(m->reg3 != LISP_NIL){
-				m->expr = m->reg3;
-				lispSetCar(m, *state, LISP_NIL);
-				*state = LISP_NIL;
-				m->reg3 = LISP_NIL;
-				m->reg4 = LISP_NIL;
-				lispCall(m, LISP_STATE_LISTEVAL2, LISP_STATE_EVAL);
-				goto again;
-	case LISP_STATE_LISTEVAL2:
-				state = &m->reg2;
-				*state = lispCar(m, m->stack);
-				// store new m->value to the rest of value chain.
-				m->reg3 = lispCdr(m, *state);
-				lispSetCdr(m, m->reg3, m->value);
-			}
-
-			*state = LISP_NIL;
-			m->reg3 = LISP_NIL;
-			m->reg4 = LISP_NIL;
-			lispPop(m);
-			m->value = lispCdr(m, lispPop(m));
-			lispReturn(m);
-			goto again;
-		}
 	}
 }
 
