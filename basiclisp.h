@@ -95,9 +95,6 @@ enum {
 struct LispMachine {
 	LispRef inst; // state of the lispstep state machine
 
-	LispRef reg0; // temp for mkcons.
-	LispRef reg1; // temp for mkcons.
-
 	LispRef regs[8];
 	uint32_t reguse;
 	int regCount;
