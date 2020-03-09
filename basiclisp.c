@@ -26,6 +26,7 @@ static char *bltnames[] = {
 [LISP_BUILTIN_CAR] = "car",
 [LISP_BUILTIN_CDR] = "cdr",
 [LISP_BUILTIN_EVAL] = "eval",
+
 [LISP_BUILTIN_ADD] = "+",
 [LISP_BUILTIN_SUB] = "-",
 [LISP_BUILTIN_MUL] = "*",
@@ -35,6 +36,7 @@ static char *bltnames[] = {
 [LISP_BUILTIN_BITXOR] = "bitwise-xor",
 [LISP_BUILTIN_BITNOT] = "bitwise-not",
 [LISP_BUILTIN_REM] = "remainder",
+
 [LISP_BUILTIN_ISPAIR] = "pair?",
 [LISP_BUILTIN_ISEQUAL] = "equal?",
 [LISP_BUILTIN_ISLESS] = "less?",
@@ -54,6 +56,11 @@ lispRegister(LispMachine *m, LispRef val)
 			LispRef *regp = &m->regs[i];
 			m->reguse = reguse | (1<<i);
 			*regp = val;
+			m->regCount++;
+			if(m->regCount > m->maxRegCount){
+				m->maxRegCount = m->regCount;
+				fprintf(stderr, "max regcount %d\n", m->maxRegCount);
+			}
 			return regp;
 		}
 	}
@@ -69,6 +76,7 @@ lispRelease(LispMachine *m, LispRef *regp)
 	if(i >= nelem(m->regs))
 		abort();
 	*regp = LISP_NIL;
+	m->regCount--;
 	m->reguse &= ~(1<<i);
 }
 

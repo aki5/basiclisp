@@ -98,8 +98,10 @@ struct LispMachine {
 	LispRef reg0; // temp for mkcons.
 	LispRef reg1; // temp for mkcons.
 
-	LispRef regs[32];
+	LispRef regs[8];
 	uint32_t reguse;
+	int regCount;
+	int maxRegCount;
 
 	LispRef value; // return value
 	LispRef expr; // expression being evaluated
