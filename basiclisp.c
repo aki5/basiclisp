@@ -1055,6 +1055,218 @@ listeval_first:
 	}
 }
 
+static int
+lispApplyBuiltin(LispMachine *m)
+{
+	LispRef blt = lispGetBuiltin(m, lispCar(m, m->expr));
+	if(blt >= LISP_BUILTIN_ADD && blt <= LISP_BUILTIN_REM){
+		LispRef ref0, ref;
+		int ires;
+		int nterms;
+		ref = lispCdr(m, m->expr);
+		ref0 = lispCar(m, ref);
+		if(lispIsNumber(m, ref0)){
+			ires = lispGetInt(m, ref0);
+		} else if(lispIsExtRef(m, ref0)){
+			// arithmetic on external object, escape.
+			lispGoto(m, LISP_STATE_CONTINUE);
+			return 1;
+		} else {
+			m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+			lispReturn(m);
+			return 0;
+		}
+		m->expr = lispCdr(m, ref);
+		nterms = 0;
+		while(m->expr != LISP_NIL){
+			nterms++;
+			ref = lispCar(m, m->expr);
+			if(lispIsNumber(m, ref)){
+				long long tmp = lispGetInt(m, ref);
+				switch(blt){
+				case LISP_BUILTIN_ADD:
+					ires += tmp;
+					break;
+				case LISP_BUILTIN_SUB:
+					ires -= tmp;
+					break;
+				case LISP_BUILTIN_MUL:
+					ires *= tmp;
+					break;
+				case LISP_BUILTIN_DIV:
+					ires /= tmp;
+					break;
+				case LISP_BUILTIN_BITIOR:
+					ires |= tmp;
+					break;
+				case LISP_BUILTIN_BITAND:
+					ires &= tmp;
+					break;
+				case LISP_BUILTIN_BITXOR:
+					ires ^= tmp;
+					break;
+				case LISP_BUILTIN_BITNOT:
+					ires = ~tmp;
+					break;
+				case LISP_BUILTIN_REM:
+					ires %= tmp;
+					break;
+				}
+			} else {
+				m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+				lispReturn(m);
+				return 0;
+			}
+			m->expr = lispCdr(m, m->expr);
+		}
+		// special case for unary sub: make it a negate.
+		if(blt == LISP_BUILTIN_SUB && nterms == 0)
+			ires = -ires;
+		m->value = lispNumber(m, ires);
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_ISPAIR){ // (pair? ...)
+		m->expr = lispCdr(m, m->expr);
+		m->expr = lispCar(m, m->expr);
+		if(lispIsPair(m, m->expr))
+			m->value =  lispBuiltin(m, LISP_BUILTIN_TRUE);
+		else
+			m->value =  lispBuiltin(m, LISP_BUILTIN_FALSE);
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_ISEQUAL){ // (equal? ...)
+		LispRef args = lispCdr(m, m->expr);
+		LispRef arg0 = lispCar(m, args);
+		args = lispCdr(m, args);
+		while(args != LISP_NIL){
+			LispRef arg = lispCar(m, args);
+			if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg)){
+				lispGoto(m, LISP_STATE_CONTINUE);
+				return 1;
+			} else if(reftag(arg0) != reftag(arg)){
+				m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
+				goto eqdone;
+			} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg)){
+				if(lispGetInt(m, arg0) != lispGetInt(m, arg)){
+					m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
+					goto eqdone;
+				}
+			} else if(lispIsPairOrNull(m, arg0) && lispIsPairOrNull(m, arg)){
+				if(arg0 != arg){
+					m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
+					goto eqdone;
+				}
+			} else {
+				fprintf(stderr, "equal?: unsupported types %d %d\n", reftag(arg0), reftag(arg));
+				m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+				lispReturn(m);
+				return 0;
+			}
+			args = lispCdr(m, args);
+		}
+		m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
+	eqdone:
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_ISLESS){
+		LispRef args = lispCdr(m, m->expr);
+		LispRef arg0 = lispCar(m, args);
+		args = lispCdr(m, args);
+		LispRef arg1 = lispCar(m, args);
+		m->value = lispBuiltin(m, LISP_BUILTIN_FALSE); // default to false.
+		if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg1)){
+			lispGoto(m, LISP_STATE_CONTINUE);
+			return 1;
+		} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg1)){
+			if(lispGetInt(m, arg0) < lispGetInt(m, arg1))
+				m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
+		} else if(lispIsSymbol(m, arg0) && lispIsSymbol(m, arg1)){
+			if(strcmp(lispStringPointer(m, arg0), lispStringPointer(m, arg1)) < 0)
+				m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
+		} else {
+			fprintf(stderr, "less?: unsupported types\n");
+			m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+			lispReturn(m);
+			return 0;
+		}
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_ISERROR){ // (error? ...)
+		m->expr = lispCdr(m, m->expr);
+		m->expr = lispCar(m, m->expr);
+		if(lispIsError(m, m->expr))
+			m->value =  lispBuiltin(m, LISP_BUILTIN_TRUE);
+		else
+			m->value =  lispBuiltin(m, LISP_BUILTIN_FALSE);
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_SETCAR || blt == LISP_BUILTIN_SETCDR){
+		LispRef *cons = lispRegister(m, lispCdr(m, m->expr));
+		LispRef *val = lispRegister(m, lispCdr(m, *cons));
+		*cons = lispCar(m, *cons); // cons
+		*val = lispCar(m, *val); // val
+		if(blt == LISP_BUILTIN_SETCAR)
+			lispSetCar(m, *cons, *val);
+		else
+			lispSetCdr(m, *cons, *val);
+		lispRelease(m, cons);
+		lispRelease(m, val);
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_CAR){
+		m->reg2 = lispCdr(m, m->expr);
+		m->reg2 = lispCar(m, m->reg2);
+		m->value = lispCar(m, m->reg2);
+		m->reg2 = LISP_NIL;
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_CDR){
+		m->reg2 = lispCdr(m, m->expr);
+		m->reg2 = lispCar(m, m->reg2);
+		m->value = lispCdr(m, m->reg2);
+		m->reg2 = LISP_NIL;
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_CONS){
+		m->reg2 = lispCdr(m, m->expr);
+		m->reg3 = lispCdr(m, m->reg2);
+		m->reg2 = lispCar(m, m->reg2);
+		m->reg3 = lispCar(m, m->reg3);
+		m->value = lispCons(m, m->reg2, m->reg3);
+		m->reg2 = LISP_NIL;
+		m->reg3 = LISP_NIL;
+		lispReturn(m);
+		return 0;
+	} else if(blt == LISP_BUILTIN_CALLCC){
+		m->expr = lispCdr(m, m->expr);
+		m->reg2 = lispCons(m, lispBuiltin(m, LISP_BUILTIN_CONTINUE), m->stack);
+		m->reg3 = lispCons(m, m->reg2, LISP_NIL);
+		m->expr = lispCons(m, lispCar(m, m->expr), m->reg3);
+		m->reg2 = LISP_NIL;
+		m->reg3 = LISP_NIL;
+		lispGoto(m, LISP_STATE_EVAL);
+		return 0;
+	} else if(blt == LISP_BUILTIN_PRINT1){
+		LispRef rest = lispCdr(m, m->expr);
+		LispRef port = lispCar(m, rest);
+		rest = lispCdr(m, rest);
+		m->value = lispCar(m, rest);
+		if(lispIsExtRef(m, m->value)){
+			// escape extref printing
+			lispGoto(m, LISP_STATE_CONTINUE);
+			return 1;
+		} else {
+			lispPrint1(m, m->value, lispGetInt(m, port));
+			lispReturn(m);
+		}
+		return 0;
+	} else if(blt == LISP_BUILTIN_EVAL){
+		m->expr = lispCar(m, lispCdr(m, m->expr)); // expr = cdar expr
+		lispGoto(m, LISP_STATE_EVAL);
+		return 0;
+	}
+}
+
 int
 lispStep(LispMachine *m)
 {
@@ -1086,6 +1298,10 @@ again:
 	case LISP_STATE_LISTEVAL1:
 	case LISP_STATE_LISTEVAL2:
 		if(lispEval(m) == 1)
+			return 1;
+		goto again;
+	case LISP_STATE_BUILTIN0:
+		if(lispApplyBuiltin(m) == 1)
 			return 1;
 		goto again;
 	case LISP_STATE_CONTINUE:
@@ -1214,213 +1430,8 @@ again:
 			m->expr = m->value;
 			head = lispCar(m, m->expr);
 			if(lispIsBuiltinTag(m, head)){
-				LispRef blt = lispGetBuiltin(m, head);
-				if(blt >= LISP_BUILTIN_ADD && blt <= LISP_BUILTIN_REM){
-					LispRef ref0, ref;
-					int ires;
-					int nterms;
-					ref = lispCdr(m, m->expr);
-					ref0 = lispCar(m, ref);
-					if(lispIsNumber(m, ref0)){
-						ires = lispGetInt(m, ref0);
-					} else if(lispIsExtRef(m, ref0)){
-						// arithmetic on external object, escape.
-						lispGoto(m, LISP_STATE_CONTINUE);
-						return 1;
-					} else {
-						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-						lispReturn(m);
-						goto again;
-					}
-					m->expr = lispCdr(m, ref);
-					nterms = 0;
-					while(m->expr != LISP_NIL){
-						nterms++;
-						ref = lispCar(m, m->expr);
-						if(lispIsNumber(m, ref)){
-							long long tmp = lispGetInt(m, ref);
-							switch(blt){
-							case LISP_BUILTIN_ADD:
-								ires += tmp;
-								break;
-							case LISP_BUILTIN_SUB:
-								ires -= tmp;
-								break;
-							case LISP_BUILTIN_MUL:
-								ires *= tmp;
-								break;
-							case LISP_BUILTIN_DIV:
-								ires /= tmp;
-								break;
-							case LISP_BUILTIN_BITIOR:
-								ires |= tmp;
-								break;
-							case LISP_BUILTIN_BITAND:
-								ires &= tmp;
-								break;
-							case LISP_BUILTIN_BITXOR:
-								ires ^= tmp;
-								break;
-							case LISP_BUILTIN_BITNOT:
-								ires = ~tmp;
-								break;
-							case LISP_BUILTIN_REM:
-								ires %= tmp;
-								break;
-							}
-						} else {
-							m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-							lispReturn(m);
-							goto again;
-						}
-						m->expr = lispCdr(m, m->expr);
-					}
-					// special case for unary sub: make it a negate.
-					if(blt == LISP_BUILTIN_SUB && nterms == 0)
-						ires = -ires;
-					m->value = lispNumber(m, ires);
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_ISPAIR){ // (pair? ...)
-					m->expr = lispCdr(m, m->expr);
-					m->expr = lispCar(m, m->expr);
-					if(lispIsPair(m, m->expr))
-						m->value =  lispBuiltin(m, LISP_BUILTIN_TRUE);
-					else
-						m->value =  lispBuiltin(m, LISP_BUILTIN_FALSE);
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_ISEQUAL){ // (equal? ...)
-					LispRef args = lispCdr(m, m->expr);
-					LispRef arg0 = lispCar(m, args);
-					args = lispCdr(m, args);
-					while(args != LISP_NIL){
-						LispRef arg = lispCar(m, args);
-						if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg)){
-							lispGoto(m, LISP_STATE_CONTINUE);
-							return 1;
-						} else if(reftag(arg0) != reftag(arg)){
-							m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
-							goto eqdone;
-						} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg)){
-							if(lispGetInt(m, arg0) != lispGetInt(m, arg)){
-								m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
-								goto eqdone;
-							}
-						} else if(lispIsPairOrNull(m, arg0) && lispIsPairOrNull(m, arg)){
-							if(arg0 != arg){
-								m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
-								goto eqdone;
-							}
-						} else {
-							fprintf(stderr, "equal?: unsupported types %d %d\n", reftag(arg0), reftag(arg));
-							m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-							lispReturn(m);
-							goto again;
-						}
-						args = lispCdr(m, args);
-					}
-					m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
-				eqdone:
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_ISLESS){
-					LispRef args = lispCdr(m, m->expr);
-					LispRef arg0 = lispCar(m, args);
-					args = lispCdr(m, args);
-					LispRef arg1 = lispCar(m, args);
-					m->value = lispBuiltin(m, LISP_BUILTIN_FALSE); // default to false.
-					if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg1)){
-						lispGoto(m, LISP_STATE_CONTINUE);
-						return 1;
-					} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg1)){
-						if(lispGetInt(m, arg0) < lispGetInt(m, arg1))
-							m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
-					} else if(lispIsSymbol(m, arg0) && lispIsSymbol(m, arg1)){
-						if(strcmp(lispStringPointer(m, arg0), lispStringPointer(m, arg1)) < 0)
-							m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
-					} else {
-						fprintf(stderr, "less?: unsupported types\n");
-						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-						lispReturn(m);
-						goto again;
-					}
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_ISERROR){ // (error? ...)
-					m->expr = lispCdr(m, m->expr);
-					m->expr = lispCar(m, m->expr);
-					if(lispIsError(m, m->expr))
-						m->value =  lispBuiltin(m, LISP_BUILTIN_TRUE);
-					else
-						m->value =  lispBuiltin(m, LISP_BUILTIN_FALSE);
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_SETCAR || blt == LISP_BUILTIN_SETCDR){
-					LispRef *cons = lispRegister(m, lispCdr(m, m->expr));
-					LispRef *val = lispRegister(m, lispCdr(m, *cons));
-					*cons = lispCar(m, *cons); // cons
-					*val = lispCar(m, *val); // val
-					if(blt == LISP_BUILTIN_SETCAR)
-						lispSetCar(m, *cons, *val);
-					else
-						lispSetCdr(m, *cons, *val);
-					lispRelease(m, cons);
-					lispRelease(m, val);
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_CAR){
-					m->reg2 = lispCdr(m, m->expr);
-					m->reg2 = lispCar(m, m->reg2);
-					m->value = lispCar(m, m->reg2);
-					m->reg2 = LISP_NIL;
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_CDR){
-					m->reg2 = lispCdr(m, m->expr);
-					m->reg2 = lispCar(m, m->reg2);
-					m->value = lispCdr(m, m->reg2);
-					m->reg2 = LISP_NIL;
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_CONS){
-					m->reg2 = lispCdr(m, m->expr);
-					m->reg3 = lispCdr(m, m->reg2);
-					m->reg2 = lispCar(m, m->reg2);
-					m->reg3 = lispCar(m, m->reg3);
-					m->value = lispCons(m, m->reg2, m->reg3);
-					m->reg2 = LISP_NIL;
-					m->reg3 = LISP_NIL;
-					lispReturn(m);
-					goto again;
-				} else if(blt == LISP_BUILTIN_CALLCC){
-					m->expr = lispCdr(m, m->expr);
-					m->reg2 = lispCons(m, lispBuiltin(m, LISP_BUILTIN_CONTINUE), m->stack);
-					m->reg3 = lispCons(m, m->reg2, LISP_NIL);
-					m->expr = lispCons(m, lispCar(m, m->expr), m->reg3);
-					m->reg2 = LISP_NIL;
-					m->reg3 = LISP_NIL;
-					lispGoto(m, LISP_STATE_EVAL);
-					goto again;
-				} else if(blt == LISP_BUILTIN_PRINT1){
-					LispRef rest = lispCdr(m, m->expr);
-					LispRef port = lispCar(m, rest);
-					rest = lispCdr(m, rest);
-					m->value = lispCar(m, rest);
-					if(lispIsExtRef(m, m->value)){
-						// escape extref printing
-						lispGoto(m, LISP_STATE_CONTINUE);
-						return 1;
-					} else {
-						lispPrint1(m, m->value, lispGetInt(m, port));
-						lispReturn(m);
-					}
-					goto again;
-				} else if(blt == LISP_BUILTIN_EVAL){
-					m->expr = lispCar(m, lispCdr(m, m->expr)); // expr = cdar expr
-					lispGoto(m, LISP_STATE_EVAL);
-					goto again;
-				}
+				lispGoto(m, LISP_STATE_BUILTIN0);
+				goto again;
 			} else if(lispIsExtRef(m, head)){
 				// we are applying an external object to lisp arguments..
 				lispGoto(m, LISP_STATE_CONTINUE);
@@ -1434,7 +1445,7 @@ again:
 				//		(let r0 (vec3 1 2 3))
 				//		(+ ('x r0) ('y r0) ('z r0))
 				// note the prefix notation for field access. there is a
-				// special form in set! for this notation, so that
+				// special form set! for this notation, so that
 				//		(set! ('x r0) 7)
 				// does what you might expect.
 				LispRef beta = lispCar(m, lispCdr(m, m->expr));
