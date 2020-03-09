@@ -984,39 +984,40 @@ lispEval(LispMachine *m)
 	default:
 		abort();
 	case LISP_STATE_LISTEVAL0:{
-			LispRef *state;
-			// construct initial evaluation state: (expr-cell . value-cell)
-			state = &m->reg2;
-			m->reg3 = lispCons(m, LISP_NIL, LISP_NIL); // first "value-cell"
-			lispPush(m, m->reg3);
-			*state = lispCons(m, m->expr, m->reg3); // construct evaluation state
+			// construct evaluation state: (expr . (expr-cell . value-cell))
+			LispRef *state = lispRegister(m, lispCons(m, LISP_NIL, LISP_NIL));
+			// push the first (expr-cell . value-cell) pair
+			// cdr of this holds the return value once entire list is evaluated.
 			lispPush(m, *state);
-			m->reg3 = m->expr;
-			goto listeval_first;
-	case LISP_STATE_LISTEVAL1:
-			state = &m->reg2;
-			*state = lispCar(m, m->stack);
-			// store new m->value to value-cell.
+			*state = lispCons(m, m->expr, *state);
+			lispPush(m, *state);
+			lispRelease(m, state);
+			lispGoto(m, LISP_STATE_LISTEVAL1);
+			return 0;
+		}
+	case LISP_STATE_LISTEVAL1:{
+			// load top of stack to state.
+			LispRef *state = lispRegister(m, lispCar(m, m->stack));
+			// store latest m->value to value-cell.
 			lispSetCar(m, lispCdr(m, *state), m->value);
-			// load expr-cell to reg3.
-			m->reg3 = lispCar(m, *state); // expr-cell = car(state)
-listeval_first:
-			if(lispIsPair(m, m->reg3)){
+			// load expr-cell to register
+			LispRef *exprCell = lispRegister(m, lispCar(m, *state)); // expr-cell = car(state)
+			if(lispIsPair(m, *exprCell)){
 				// load new expr from expr-cell and set expr-cell to next expr.
-				m->expr = lispCar(m, m->reg3); // expr = (car expr-cell)
-				m->reg3 = lispCdr(m, m->reg3); // reg3 = (cdr expr-cell)
-				lispSetCar(m, *state, m->reg3); //  car(state) = (cdr expr-cell)
+				m->expr = lispCar(m, *exprCell); // expr = (car expr-cell)
+				*exprCell = lispCdr(m, *exprCell); // expr-cell = (cdr expr-cell)
+				lispSetCar(m, *state, *exprCell); //  car(state) = (cdr expr-cell)
 
 				// allocate new value-cell, link cdr of current value-cell to it and set value-cell to the new one.
-				m->reg4 = lispCons(m, LISP_NIL, LISP_NIL);
-				m->reg3 = lispCdr(m, *state); // reg3 = value-cell ; cdr(state)
-				lispSetCdr(m, m->reg3, m->reg4); // cdr(cdr state) = reg4, cdr(value-cell) = reg4
-				lispSetCdr(m, *state, m->reg4); // value-cell = reg4
+				LispRef *valueCell = lispRegister(m, lispCons(m, LISP_NIL, LISP_NIL));
+				*exprCell = lispCdr(m, *state);
+				lispSetCdr(m, *exprCell, *valueCell);
+				lispSetCdr(m, *state, *valueCell);
 
-				// clean up registers, mainly for gc.
-				*state = LISP_NIL;
-				m->reg3 = LISP_NIL;
-				m->reg4 = LISP_NIL;
+				// release registers
+				lispRelease(m, state);
+				lispRelease(m, exprCell);
+				lispRelease(m, valueCell);
 				// call "apply" on the current expr and have it return to this case.
 				lispCall(m, LISP_STATE_LISTEVAL1, LISP_STATE_EVAL);
 				return 0;
@@ -1028,29 +1029,35 @@ listeval_first:
 			// dotted notation for apply, there is no need an apply built-in.
 			// unfortunately, of course the dotted tail must not be a literal list,
 			// so defining apply as a function is still going to be necessary.
-			if(m->reg3 != LISP_NIL){
-				m->expr = m->reg3;
+			if(*exprCell != LISP_NIL){
+				m->expr = *exprCell;
 				lispSetCar(m, *state, LISP_NIL);
-				*state = LISP_NIL;
-				m->reg3 = LISP_NIL;
-				m->reg4 = LISP_NIL;
+				lispRelease(m, state);
+				lispRelease(m, exprCell);
 				lispCall(m, LISP_STATE_LISTEVAL2, LISP_STATE_EVAL);
 				return 0;
-	case LISP_STATE_LISTEVAL2:
-				state = &m->reg2;
-				*state = lispCar(m, m->stack);
-				// store new m->value to the rest of value chain.
-				m->reg3 = lispCdr(m, *state);
-				lispSetCdr(m, m->reg3, m->value);
 			}
 
-			*state = LISP_NIL;
-			m->reg3 = LISP_NIL;
-			m->reg4 = LISP_NIL;
+			lispRelease(m, state);
+			lispRelease(m, exprCell);
 			lispPop(m);
 			m->value = lispCdr(m, lispPop(m));
 			lispReturn(m);
 			return 0;
+		}
+	case LISP_STATE_LISTEVAL2:{
+			// load top of stack to state.
+			LispRef *state = lispRegister(m, lispCar(m, m->stack));
+			// store new m->value to the rest of value chain.
+			// vast majority of time m->value is nil, except for the
+			// non-standard arg splicing situation from above.
+			lispSetCdr(m, lispCdr(m, *state), m->value);
+			lispRelease(m, state);
+			// pop evaluation state
+			lispPop(m);
+			// pop the head and return its value-cell.
+			m->value = lispCdr(m, lispPop(m));
+			lispReturn(m);
 		}
 	}
 }
@@ -1214,36 +1221,32 @@ lispApplyBuiltin(LispMachine *m)
 		lispReturn(m);
 		return 0;
 	} else if(blt == LISP_BUILTIN_CAR){
-		m->reg2 = lispCdr(m, m->expr);
-		m->reg2 = lispCar(m, m->reg2);
-		m->value = lispCar(m, m->reg2);
-		m->reg2 = LISP_NIL;
+		LispRef tmp = lispCdr(m, m->expr); // ('car thing.. -> (thing..
+		tmp = lispCar(m, tmp); // (thing.. -> thing
+		m->value = lispCar(m, tmp); // (car thing)
 		lispReturn(m);
 		return 0;
 	} else if(blt == LISP_BUILTIN_CDR){
-		m->reg2 = lispCdr(m, m->expr);
-		m->reg2 = lispCar(m, m->reg2);
-		m->value = lispCdr(m, m->reg2);
-		m->reg2 = LISP_NIL;
+		LispRef tmp = lispCdr(m, m->expr);
+		tmp = lispCar(m, tmp);
+		m->value = lispCdr(m, tmp);
 		lispReturn(m);
 		return 0;
 	} else if(blt == LISP_BUILTIN_CONS){
-		m->reg2 = lispCdr(m, m->expr);
-		m->reg3 = lispCdr(m, m->reg2);
-		m->reg2 = lispCar(m, m->reg2);
-		m->reg3 = lispCar(m, m->reg3);
-		m->value = lispCons(m, m->reg2, m->reg3);
-		m->reg2 = LISP_NIL;
-		m->reg3 = LISP_NIL;
+		LispRef tmp0 = lispCdr(m, m->expr);
+		LispRef tmp1 = lispCdr(m, tmp0);
+		tmp0 = lispCar(m, tmp0);
+		tmp1 = lispCar(m, tmp1);
+		m->value = lispCons(m, tmp0, tmp1);
 		lispReturn(m);
 		return 0;
 	} else if(blt == LISP_BUILTIN_CALLCC){
 		m->expr = lispCdr(m, m->expr);
-		m->reg2 = lispCons(m, lispBuiltin(m, LISP_BUILTIN_CONTINUE), m->stack);
-		m->reg3 = lispCons(m, m->reg2, LISP_NIL);
-		m->expr = lispCons(m, lispCar(m, m->expr), m->reg3);
-		m->reg2 = LISP_NIL;
-		m->reg3 = LISP_NIL;
+		LispRef *tmp0 = lispRegister(m, lispCons(m, lispBuiltin(m, LISP_BUILTIN_CONTINUE), m->stack));
+		LispRef *tmp1 = lispRegister(m, lispCons(m, *tmp0, LISP_NIL));
+		m->expr = lispCons(m, lispCar(m, m->expr), *tmp1);
+		lispRelease(m, tmp0);
+		lispRelease(m, tmp1);
 		lispGoto(m, LISP_STATE_EVAL);
 		return 0;
 	} else if(blt == LISP_BUILTIN_PRINT1){
@@ -1568,14 +1571,18 @@ again:
 						goto again;
 					}
 				}
-
-	case LISP_STATE_BETA1:
-				m->reg2 = lispCar(m, m->stack);
-				if(m->reg2 != LISP_NIL){
-					m->expr = lispCar(m, m->reg2);
-					m->reg2 = lispCdr(m, m->reg2);
-					lispSetCar(m, m->stack, m->reg2);
-					if(m->reg2 != LISP_NIL){
+			} else {
+				fprintf(stderr, "apply: head element has unrecognized form\n");
+				lispReturn(m);
+				goto again;
+			}
+	case LISP_STATE_BETA1:{
+				LispRef tmp = lispCar(m, m->stack);
+				if(tmp != LISP_NIL){
+					m->expr = lispCar(m, tmp);
+					tmp = lispCdr(m, tmp);
+					lispSetCar(m, m->stack, tmp);
+					if(tmp != LISP_NIL){
 						lispCall(m, LISP_STATE_BETA1, LISP_STATE_EVAL);
 						goto again;
 					} else { // tail call
@@ -1585,12 +1592,6 @@ again:
 					}
 				}
 				lispPop(m); // pop expr.
-				lispReturn(m);
-				goto again;
-			} else {
-				fprintf(stderr, "apply: head is weird: ");
-				//eval_print(m);
-				fprintf(stderr, "\n");
 				lispReturn(m);
 				goto again;
 			}
@@ -1670,13 +1671,6 @@ lispCollect(LispMachine *m)
 	memcpy(&m->copy, &oldm.mem, sizeof m->copy);
 	m->gclock++;
 
-	// copy registers as roots.
-	LispRef reg0tmp = lispCopy(m, &oldm, oldm.reg0);
-	LispRef reg1tmp = lispCopy(m, &oldm, oldm.reg1);
-	m->reg2 = lispCopy(m, &oldm, oldm.reg2);
-	m->reg3 = lispCopy(m, &oldm, oldm.reg3);
-	m->reg4 = lispCopy(m, &oldm, oldm.reg4);
-
 	// copy the "dynamic" registers.
 	uint32_t reguse = oldm.reguse;
 	for(size_t i = 0; i < nelem(m->regs); i++)
@@ -1692,11 +1686,8 @@ lispCollect(LispMachine *m)
 	for(size_t i = 2; i < m->mem.len; i++)
 		m->mem.ref[i] = lispCopy(m, &oldm, m->mem.ref[i]);
 
-if(0)fprintf(stderr, "collected: from %zu to %zu\n", oldlen, m->mem.len);
-	// re-copy the registers used by cons, lispCopy calls cons itself so
-	// they get overwritten over and over again during gc.
-	m->reg0 = reg0tmp;
-	m->reg1 = reg1tmp;
+//if(1)fprintf(stderr, "collected: from %zu to %zu\n", oldlen, m->mem.len);
+
 
 	m->gclock--;
 }

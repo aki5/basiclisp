@@ -97,9 +97,6 @@ struct LispMachine {
 
 	LispRef reg0; // temp for mkcons.
 	LispRef reg1; // temp for mkcons.
-	LispRef reg2;
-	LispRef reg3;
-	LispRef reg4;
 
 	LispRef regs[32];
 	uint32_t reguse;
