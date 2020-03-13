@@ -764,9 +764,16 @@ lispPush(LispMachine *m, LispRef val)
 }
 
 static LispRef
-lispPop(LispMachine *m)
+lispPeek(LispMachine *m)
 {
 	LispRef val = lispCar(m, m->stack);
+	return val;
+}
+
+static LispRef
+lispPop(LispMachine *m)
+{
+	LispRef val = lispPeek(m);
 	m->stack = lispCdr(m, m->stack);
 	return val;
 }
@@ -805,7 +812,7 @@ lispDefine(LispMachine *m, LispRef sym, LispRef val)
 }
 
 static int
-lispEvalIf(LispMachine *m)
+lispApplyIf(LispMachine *m)
 {
 	switch(lispGetBuiltin(m, m->inst)){
 	default:
@@ -828,11 +835,11 @@ lispEvalIf(LispMachine *m)
 			lispGoto(m, LISP_STATE_CONTINUE);
 			return 1;
 		} else {
-			m->expr = lispCdr(m, m->expr); // 'if' -> 'cond'
-			m->expr = lispCdr(m, m->expr); // 'cond' -> 'then'
+			LispRef tmp = lispCdr(m, m->expr);// 'if' -> 'cond'
+			tmp = lispCdr(m, tmp); // 'cond' -> 'then'
 			if(m->value == lispBuiltin(m, LISP_BUILTIN_FALSE))
-				m->expr = lispCdr(m, m->expr); // 'then' -> 'else'
-			m->expr = lispCar(m, m->expr);
+				tmp = lispCdr(m, tmp); // 'then' -> 'else'
+			m->expr = lispCar(m, tmp);
 			lispGoto(m, LISP_STATE_EVAL);
 			return 0;
 		}
@@ -840,7 +847,7 @@ lispEvalIf(LispMachine *m)
 }
 
 static int
-lispEvalLet(LispMachine *m)
+lispApplyLet(LispMachine *m)
 {
 	switch(lispGetBuiltin(m, m->inst)){
 	default:
@@ -885,7 +892,7 @@ lispEvalLet(LispMachine *m)
 }
 
 static int
-lispEvalSet(LispMachine *m)
+lispApplySet(LispMachine *m)
 {
 	switch(lispGetBuiltin(m, m->inst)){
 	default:
@@ -905,7 +912,7 @@ lispEvalSet(LispMachine *m)
 				m->expr = *sym;
 				lispRelease(m, sym);
 				lispRelease(m, val);
-				lispCall(m, LISP_STATE_SET1, LISP_STATE_LISTEVAL0);
+				lispCall(m, LISP_STATE_SET1, LISP_STATE_EVAL_ARGS0);
 				return 0;
 			} else {
 				*val = lispCar(m, *val);
@@ -931,143 +938,60 @@ lispEvalSet(LispMachine *m)
 		}
 	case LISP_STATE_SET2:{
 			// restore sym from stack, construct (sym . val)
-			LispRef *sym = lispRegister(m, lispPop(m));
-			LispRef lst;
-			if(lispIsPair(m, *sym)){
-				LispRef beta = lispCar(m, lispCdr(m, *sym));
+			LispRef *symp = lispRegister(m, lispPop(m));
+			LispRef envr;
+			if(lispIsPair(m, *symp)){
+
+				LispRef beta = lispCar(m, lispCdr(m, *symp));
 				if(lispIsExtRef(m, beta)){
 					// it's (10 buf) form, ie. buffer indexing
 					// assemble a form (set! (10 buf) value) and call/ext
 					m->expr = lispCons(m, m->value, LISP_NIL);
-					m->expr = lispCons(m, *sym, m->expr);
+					m->expr = lispCons(m, *symp, m->expr);
 					m->expr = lispCons(m, lispBuiltin(m, LISP_BUILTIN_SET), m->expr);
-					lispRelease(m, sym);
+					lispRelease(m, symp);
 					lispGoto(m, LISP_STATE_CONTINUE);
 					return 1;
 				}
-				LispRef betahead = lispCar(m, beta);
-				if(lispIsBuiltin(m, betahead, LISP_BUILTIN_BETA)){
-					// it's ('field obj) form, ie. object access.
-					// set environment scan to start from beta's captured environment.
-					lst = lispCdr(m, lispCdr(m, beta));
-					*sym = lispCar(m, *sym);
+				LispRef betaHead = lispCar(m, beta);
+				if(lispIsBuiltin(m, betaHead, LISP_BUILTIN_BETA)){
+					// it's (set! ('sym beta) ...) form, ie. member access.
+					// -> search sym in envr captured in beta
+					envr = lispCdr(m, lispCdr(m, beta));
+					*symp = lispCar(m, *symp);
 				} else {
 					// else it's unsupported form
 					fprintf(stderr, "set!: unsupported form in first argument\n");
 					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-					lispRelease(m, sym);
+					lispRelease(m, symp);
 					lispReturn(m);
 					return 0;
 				}
 			} else {
-				lst = m->envr;
+				// (set! sym ...) -> search sym in active envr.
+				envr = m->envr;
 			}
-			LispRef pair;
-			while(lst != LISP_NIL){
-				pair = lispCar(m, lst);
-				if(lispIsPair(m, pair)){
-					LispRef key = lispCar(m, pair);
-					if(key == *sym)
-						break;
-				}
-				lst = lispCdr(m, lst);
-			}
-			if(lst != LISP_NIL)
-				lispSetCdr(m, pair, m->value);
+			m->expr = envr;
+			lispPush(m, m->value);
+			lispPush(m, *symp);
+			lispRelease(m, symp);
+			lispCall(m, LISP_STATE_SET3, LISP_STATE_SYM_LOOKUP0);
+			return 0;
+		}
+	case LISP_STATE_SET3:{
+			LispRef sym = lispPop(m);
+			LispRef value = lispPop(m);
+			LispRef pair = m->value;
+			if(pair != LISP_NIL)
+				lispSetCdr(m, pair, value);
 			else
-				fprintf(stderr, "set!: undefined symbol %s\n", (char *)lispStringPointer(m, *sym));
-			lispRelease(m, sym);
+				fprintf(stderr, "set!: undefined symbol %s\n", (char *)lispStringPointer(m, sym));
 			m->value = LISP_NIL;
 			lispReturn(m);
 			return 0;
 		}
 	}
 	abort();
-}
-
-static int
-lispEval(LispMachine *m)
-{
-	switch(lispGetBuiltin(m, m->inst)){
-	default:
-		abort();
-	case LISP_STATE_LISTEVAL0:{
-			// construct evaluation state: (expr . (expr-cell . value-cell))
-			LispRef *state = lispRegister(m, lispCons(m, LISP_NIL, LISP_NIL));
-			// push the first (expr-cell . value-cell) pair
-			// cdr of this holds the return value once entire list is evaluated.
-			lispPush(m, *state);
-			*state = lispCons(m, m->expr, *state);
-			lispPush(m, *state);
-			lispRelease(m, state);
-			lispGoto(m, LISP_STATE_LISTEVAL1);
-			return 0;
-		}
-	case LISP_STATE_LISTEVAL1:{
-			// load top of stack to state.
-			LispRef *state = lispRegister(m, lispCar(m, m->stack));
-			// store latest m->value to value-cell.
-			lispSetCar(m, lispCdr(m, *state), m->value);
-			// load expr-cell to register
-			LispRef *exprCell = lispRegister(m, lispCar(m, *state)); // expr-cell = car(state)
-			if(lispIsPair(m, *exprCell)){
-				// load new expr from expr-cell and set expr-cell to next expr.
-				m->expr = lispCar(m, *exprCell); // expr = (car expr-cell)
-				*exprCell = lispCdr(m, *exprCell); // expr-cell = (cdr expr-cell)
-				lispSetCar(m, *state, *exprCell); //  car(state) = (cdr expr-cell)
-
-				// allocate new value-cell, link cdr of current value-cell to it and set value-cell to the new one.
-				LispRef *valueCell = lispRegister(m, lispCons(m, LISP_NIL, LISP_NIL));
-				*exprCell = lispCdr(m, *state);
-				lispSetCdr(m, *exprCell, *valueCell);
-				lispSetCdr(m, *state, *valueCell);
-
-				// release registers
-				lispRelease(m, state);
-				lispRelease(m, exprCell);
-				lispRelease(m, valueCell);
-				// call "apply" on the current expr and have it return to this case.
-				lispCall(m, LISP_STATE_LISTEVAL1, LISP_STATE_EVAL);
-				return 0;
-			}
-			// this following bit is non-standard, it allows one to call a function
-			// with the notation (fn . args) or (fn arg1 arg2 . rest), effectively
-			// splicing a list 'args' in to the argument list, analogous to how
-			// varargs are declared in standard scheme functions. by allowing the
-			// dotted notation for apply, there is no need an apply built-in.
-			// unfortunately, of course the dotted tail must not be a literal list,
-			// so defining apply as a function is still going to be necessary.
-			if(*exprCell != LISP_NIL){
-				m->expr = *exprCell;
-				lispSetCar(m, *state, LISP_NIL);
-				lispRelease(m, state);
-				lispRelease(m, exprCell);
-				lispCall(m, LISP_STATE_LISTEVAL2, LISP_STATE_EVAL);
-				return 0;
-			}
-
-			lispRelease(m, state);
-			lispRelease(m, exprCell);
-			lispPop(m);
-			m->value = lispCdr(m, lispPop(m));
-			lispReturn(m);
-			return 0;
-		}
-	case LISP_STATE_LISTEVAL2:{
-			// load top of stack to state.
-			LispRef *state = lispRegister(m, lispCar(m, m->stack));
-			// store new m->value to the rest of value chain.
-			// vast majority of time m->value is nil, except for the
-			// non-standard arg splicing situation from above.
-			lispSetCdr(m, lispCdr(m, *state), m->value);
-			lispRelease(m, state);
-			// pop evaluation state
-			lispPop(m);
-			// pop the head and return its value-cell.
-			m->value = lispCdr(m, lispPop(m));
-			lispReturn(m);
-		}
-	}
 }
 
 static int
@@ -1278,6 +1202,135 @@ lispApplyBuiltin(LispMachine *m)
 	}
 }
 
+static int
+lispApplySymLookup(LispMachine *m)
+{
+	switch(lispGetBuiltin(m, m->inst)){
+	default:
+		abort();
+	case LISP_STATE_SYM_LOOKUP0:
+		if(m->expr == LISP_NIL){
+			// not found
+			m->value = LISP_NIL;
+			lispReturn(m);
+			return 0;
+		} else {
+			LispRef envr = m->expr;
+			LispRef sym = lispCdr(m, m->stack);
+			sym = lispCdr(m, sym);
+			sym = lispCar(m, sym);
+			LispRef pair = lispCar(m, envr);
+			if(lispIsPair(m, pair)){
+				LispRef key = lispCar(m, pair);
+				if(key == sym){
+					m->value = pair;
+					lispReturn(m);
+					return 0;
+				}
+			}
+			envr = lispCdr(m, envr);
+			m->expr = envr;
+			return 0;
+		}
+	}
+}
+
+static int
+lispEvalArgs(LispMachine *m)
+{
+	switch(lispGetBuiltin(m, m->inst)){
+	default:
+		abort();
+	case LISP_STATE_EVAL_ARGS0:{
+			// construct evaluation state: (expr . (expr-cell . value-cell))
+			LispRef *state = lispRegister(m, lispCons(m, LISP_NIL, LISP_NIL));
+			// push the first (expr-cell . value-cell) pair
+			// cdr of this holds the return value once entire list is evaluated.
+			lispPush(m, *state);
+			*state = lispCons(m, m->expr, *state);
+			lispPush(m, *state);
+			lispRelease(m, state);
+			lispGoto(m, LISP_STATE_EVAL_ARGS1);
+			return 0;
+		}
+	case LISP_STATE_EVAL_ARGS1:{
+			// load top of stack to state.
+			LispRef *state = lispRegister(m, lispPeek(m));
+			// store latest m->value to value-cell.
+			lispSetCar(m, lispCdr(m, *state), m->value);
+			// load expr-cell to register
+			LispRef *exprCell = lispRegister(m, lispCar(m, *state)); // expr-cell = car(state)
+			if(lispIsPair(m, *exprCell)){
+				lispRelease(m, state);
+				lispRelease(m, exprCell);
+				lispGoto(m, LISP_STATE_EVAL_ARGS3);
+				return 0;
+			}
+			// this following bit is non-standard, it allows one to call a function
+			// with the notation (fn . args) or (fn arg1 arg2 . rest), effectively
+			// splicing a list 'args' in to the argument list, analogous to how
+			// varargs are declared in standard scheme functions. by allowing the
+			// dotted notation for apply, there is no need an apply built-in.
+			// unfortunately, of course the dotted tail must not be a literal list,
+			// so defining apply as a function is still going to be necessary.
+			if(*exprCell != LISP_NIL){
+				m->expr = *exprCell;
+				lispSetCar(m, *state, LISP_NIL);
+				lispRelease(m, state);
+				lispRelease(m, exprCell);
+				lispCall(m, LISP_STATE_EVAL_ARGS2, LISP_STATE_EVAL);
+				return 0;
+			}
+
+			// arg list evaluation is done
+			assert(*exprCell == LISP_NIL);
+			lispRelease(m, state);
+			lispRelease(m, exprCell);
+			lispPop(m);
+			m->value = lispCdr(m, lispPop(m));
+			lispReturn(m);
+			return 0;
+		}
+	case LISP_STATE_EVAL_ARGS3:{
+			// exprcell is a pair (a list)
+			LispRef *state = lispRegister(m, lispPeek(m));
+			LispRef *exprCell = lispRegister(m, lispCar(m, *state)); // expr-cell = car(state)
+			// load new expr from expr-cell and set expr-cell to next expr.
+			m->expr = lispCar(m, *exprCell); // expr = (car expr-cell)
+			*exprCell = lispCdr(m, *exprCell); // expr-cell = (cdr expr-cell)
+			lispSetCar(m, *state, *exprCell); //  car(state) = (cdr expr-cell)
+
+			// allocate new value-cell, link cdr of current value-cell to it and set value-cell to the new one.
+			LispRef *valueCell = lispRegister(m, lispCons(m, LISP_NIL, LISP_NIL));
+			*exprCell = lispCdr(m, *state);
+			lispSetCdr(m, *exprCell, *valueCell);
+			lispSetCdr(m, *state, *valueCell);
+
+			// release registers
+			lispRelease(m, state);
+			lispRelease(m, exprCell);
+			lispRelease(m, valueCell);
+			// call "apply" on the current expr and have it return to this case.
+			lispCall(m, LISP_STATE_EVAL_ARGS1, LISP_STATE_EVAL);
+			return 0;
+		}
+	case LISP_STATE_EVAL_ARGS2:{
+			// load top of stack to state.
+			LispRef *state = lispRegister(m, lispPeek(m));
+			// store new m->value to the rest of value chain.
+			// vast majority of time m->value is nil, except for the
+			// non-standard arg splicing situation from above.
+			lispSetCdr(m, lispCdr(m, *state), m->value);
+			lispRelease(m, state);
+			// pop evaluation state
+			lispPop(m);
+			// pop the head and return its value-cell.
+			m->value = lispCdr(m, lispPop(m));
+			lispReturn(m);
+		}
+	}
+}
+
 int
 lispStep(LispMachine *m)
 {
@@ -1289,26 +1342,38 @@ again:
 	switch(lispGetBuiltin(m, m->inst)){
 	default:
 		fprintf(stderr, "lispStep: invalid instruction %zd, bailing out.\n", refval(m->inst));
+
 	case LISP_STATE_IF0:
 	case LISP_STATE_IF1:
-		if(lispEvalIf(m) == 1)
+		if(lispApplyIf(m) == 1)
 			return 1;
 		goto again;
 	case LISP_STATE_LET0:
 	case LISP_STATE_LET1:
-		if(lispEvalLet(m) == 1)
+		if(lispApplyLet(m) == 1)
 			return 1;
+		goto again;
+	case LISP_STATE_SYM_LOOKUP0:
+		if(lispApplySymLookup(m) == 1)
+			return 1;
+		goto again;
+	case LISP_STATE_SYM_LOOKUP1:
+		lispPop(m);
+		m->value = lispCdr(m, m->value);
+		lispReturn(m);
 		goto again;
 	case LISP_STATE_SET0:
 	case LISP_STATE_SET1:
 	case LISP_STATE_SET2:
-		if(lispEvalSet(m) == 1)
+	case LISP_STATE_SET3:
+		if(lispApplySet(m) == 1)
 			return 1;
 		goto again;
-	case LISP_STATE_LISTEVAL0:
-	case LISP_STATE_LISTEVAL1:
-	case LISP_STATE_LISTEVAL2:
-		if(lispEval(m) == 1)
+	case LISP_STATE_EVAL_ARGS0:
+	case LISP_STATE_EVAL_ARGS1:
+	case LISP_STATE_EVAL_ARGS2:
+	case LISP_STATE_EVAL_ARGS3:
+		if(lispEvalArgs(m) == 1)
 			return 1;
 		goto again;
 	case LISP_STATE_BUILTIN0:
@@ -1329,23 +1394,9 @@ again:
 		} else if(lispIsSymbol(m, m->expr)){
 			// symbol evaluates to the looked up value in
 			// current environment
-			LispRef lst = m->envr;
-			while(lst != LISP_NIL){
-				LispRef pair = lispCar(m, lst);
-				if(lispIsPair(m, pair)){
-					LispRef key = lispCar(m, pair);
-					if(key == m->expr){
-						m->value = lispCdr(m, pair);
-						break;
-					}
-				}
-				lst = lispCdr(m, lst);
-			}
-			if(lst == LISP_NIL){
-				fprintf(stderr, "undefined symbol: %s\n", (char *)lispStringPointer(m, m->expr));
-				m->value = m->expr; // undefined
-			}
-			lispReturn(m);
+			lispPush(m, m->expr); // push the symbol to look for
+			m->expr = m->envr; // environment to find it in.
+			lispCall(m, LISP_STATE_SYM_LOOKUP1, LISP_STATE_SYM_LOOKUP0);
 			goto again;
 		} else if(lispIsPair(m, m->expr)){
 			// form is (something), so this is 'application'
@@ -1435,7 +1486,7 @@ again:
 
 			// at this point we know it is a list, and that it is
 			// not a special form. evaluate args, then apply.
-			lispCall(m, LISP_STATE_APPLY, LISP_STATE_LISTEVAL0);
+			lispCall(m, LISP_STATE_APPLY, LISP_STATE_EVAL_ARGS0);
 			goto again;
 	case LISP_STATE_APPLY:
 			m->expr = m->value;
@@ -1473,22 +1524,9 @@ again:
 				}
 				LispRef betahead = lispCar(m, beta);
 				if(lispIsBuiltin(m, betahead, LISP_BUILTIN_BETA)){
-					LispRef lst = lispCdr(m, lispCdr(m, beta));
-					while(lst != LISP_NIL){
-						LispRef pair = lispCar(m, lst);
-						if(lispIsPair(m, pair)){
-							LispRef key = lispCar(m, pair);
-							if(key == head){
-								m->value = lispCdr(m, pair);
-								lispReturn(m);
-								goto again;
-							}
-						}
-						lst = lispCdr(m, lst);
-					}
-					fprintf(stderr, "symbol %s not found in object\n", (char *)lispStringPointer(m, head));
-					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-					lispReturn(m);
+					m->expr = lispCdr(m, lispCdr(m, beta));
+					lispPush(m, head);
+					lispCall(m, LISP_STATE_SYM_LOOKUP1, LISP_STATE_SYM_LOOKUP0);
 					goto again;
 				} else {
 					fprintf(stderr, "symbol finding in a non-object\n");
@@ -1525,52 +1563,8 @@ again:
 					lispReturn(m);
 					goto again;
 				} else if(lispIsBuiltin(m, head, LISP_BUILTIN_BETA)){
-
-					lambda = lispCar(m, lispCdr(m, beta));
-					m->envr = lispCdr(m, lispCdr(m, beta));
-
-					LispRef *argnames = lispRegister(m, lispCdr(m, lambda));
-					LispRef *args = lispRegister(m, lispCdr(m, m->expr)); // args = cdr expr
-					if(lispIsPair(m, *argnames)){
-						// loop over argnames and args simultaneously, cons
-						// them as pairs to the environment
-						*argnames = lispCar(m, *argnames);
-						while(lispIsPair(m, *argnames) && lispIsPair(m, *args)){
-							LispRef *pair = lispRegister(m, lispCons(m,
-								lispCar(m, *argnames),
-								lispCar(m, *args)));
-							m->envr = lispCons(m, *pair, m->envr);
-							*argnames = lispCdr(m, *argnames);
-							*args = lispCdr(m, *args);
-							lispRelease(m, pair);
-						}
-					}
-
-					// scheme-style variadic: argnames list terminates in a
-					// symbol instead of LISP_NIL, associate the rest of argslist
-					// with it. notice: (lambda x (body)) also lands here.
-					if(*argnames != LISP_NIL && !lispIsPair(m, *argnames)){
-						LispRef *pair = lispRegister(m, lispCons(m, *argnames, *args));
-						m->envr = lispCons(m, *pair, m->envr);
-						lispRelease(m, pair);
-					} else if(*argnames != LISP_NIL || *args != LISP_NIL){
-						fprintf(stderr, "mismatch in number of function args\n");
-						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-						lispReturn(m);
-						goto again;
-					}
-
-					// push a new 'environment head' in.
-					m->envr = lispCons(m, LISP_NIL, m->envr);
-					// clear the registers.
-					lispRelease(m, argnames);
-					lispRelease(m, args);
-
-					// parameters are bound, pull body from lambda to m->expr.
-					beta = lispCar(m, m->expr); // beta = car expr
-					lambda = lispCar(m, lispCdr(m, beta));
-					m->expr = lispCdr(m, lispCdr(m, lambda));
-					lispPush(m, m->expr);
+					lispGoto(m, LISP_STATE_BETA0);
+					goto again;
 				} else {
 					if(refval(head) != LISP_BUILTIN_BETA){
 						fprintf(stderr, "applying list with non-beta head\n");
@@ -1584,8 +1578,59 @@ again:
 				lispReturn(m);
 				goto again;
 			}
+
+	case LISP_STATE_BETA0:{
+				LispRef beta = lispCar(m, m->expr);
+				LispRef lambda = lispCar(m, lispCdr(m, beta));
+				m->envr = lispCdr(m, lispCdr(m, beta));
+
+				LispRef *argnames = lispRegister(m, lispCdr(m, lambda));
+				LispRef *args = lispRegister(m, lispCdr(m, m->expr)); // args = cdr expr
+				if(lispIsPair(m, *argnames)){
+					// loop over argnames and args simultaneously, cons
+					// them as pairs to the environment
+					*argnames = lispCar(m, *argnames);
+					while(lispIsPair(m, *argnames) && lispIsPair(m, *args)){
+						LispRef *pair = lispRegister(m, lispCons(m,
+							lispCar(m, *argnames),
+							lispCar(m, *args)));
+						m->envr = lispCons(m, *pair, m->envr);
+						*argnames = lispCdr(m, *argnames);
+						*args = lispCdr(m, *args);
+						lispRelease(m, pair);
+					}
+				}
+
+				// scheme-style variadic: argnames list terminates in a
+				// symbol instead of LISP_NIL, associate the rest of argslist
+				// with it. notice: (lambda x (body)) also lands here.
+				if(*argnames != LISP_NIL && !lispIsPair(m, *argnames)){
+					LispRef *pair = lispRegister(m, lispCons(m, *argnames, *args));
+					m->envr = lispCons(m, *pair, m->envr);
+					lispRelease(m, pair);
+				} else if(*argnames != LISP_NIL || *args != LISP_NIL){
+					fprintf(stderr, "mismatch in number of function args\n");
+					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+					lispReturn(m);
+					goto again;
+				}
+
+				// push a new 'environment head' in.
+				m->envr = lispCons(m, LISP_NIL, m->envr);
+				// clear the registers.
+				lispRelease(m, argnames);
+				lispRelease(m, args);
+
+				// parameters are bound, pull body from lambda to m->expr.
+				beta = lispCar(m, m->expr); // beta = car expr
+				lambda = lispCar(m, lispCdr(m, beta));
+				m->expr = lispCdr(m, lispCdr(m, lambda));
+				lispPush(m, m->expr);
+				lispGoto(m, LISP_STATE_BETA1);
+				goto again;
+			}
 	case LISP_STATE_BETA1:{
-				LispRef tmp = lispCar(m, m->stack);
+				LispRef tmp = lispPeek(m);
 				if(tmp != LISP_NIL){
 					m->expr = lispCar(m, tmp);
 					tmp = lispCdr(m, tmp);
@@ -1695,7 +1740,6 @@ lispCollect(LispMachine *m)
 		m->mem.ref[i] = lispCopy(m, &oldm, m->mem.ref[i]);
 
 //if(1)fprintf(stderr, "collected: from %zu to %zu\n", oldlen, m->mem.len);
-
 
 	m->gclock--;
 }
