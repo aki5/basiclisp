@@ -1587,23 +1587,56 @@ again:
 				LispRef *argnames = lispRegister(m, lispCdr(m, lambda));
 				LispRef *args = lispRegister(m, lispCdr(m, m->expr)); // args = cdr expr
 				if(lispIsPair(m, *argnames)){
-					// loop over argnames and args simultaneously, cons
-					// them as pairs to the environment
 					*argnames = lispCar(m, *argnames);
-					while(lispIsPair(m, *argnames) && lispIsPair(m, *args)){
-						LispRef *pair = lispRegister(m, lispCons(m,
-							lispCar(m, *argnames),
-							lispCar(m, *args)));
-						m->envr = lispCons(m, *pair, m->envr);
-						*argnames = lispCdr(m, *argnames);
-						*args = lispCdr(m, *args);
-						lispRelease(m, pair);
-					}
+					lispPush(m, *argnames);
+					lispPush(m, *args);
+					lispRelease(m, argnames);
+					lispRelease(m, args);
+					lispGoto(m, LISP_STATE_BETA1);
+					goto again;
+				} else {
+					lispPush(m, *argnames);
+					lispPush(m, *args);
+					lispRelease(m, argnames);
+					lispRelease(m, args);
+					lispGoto(m, LISP_STATE_BETA2);
+					goto again;
 				}
-
-				// scheme-style variadic: argnames list terminates in a
+			}
+	case LISP_STATE_BETA1:{
+				// loop over argnames and args simultaneously, cons
+				// them as pairs to the environment
+				LispRef *args = lispRegister(m, lispPop(m)); // args = cdr expr
+				LispRef *argnames = lispRegister(m, lispPop(m));
+				if(lispIsPair(m, *argnames) && lispIsPair(m, *args)){
+					LispRef *pair = lispRegister(m, lispCons(m,
+						lispCar(m, *argnames),
+						lispCar(m, *args)));
+					m->envr = lispCons(m, *pair, m->envr);
+					*argnames = lispCdr(m, *argnames);
+					*args = lispCdr(m, *args);
+					lispPush(m, *argnames);
+					lispPush(m, *args);
+					lispRelease(m, argnames);
+					lispRelease(m, args);
+					lispRelease(m, pair);
+					lispGoto(m, LISP_STATE_BETA1);
+					goto again;
+				} else {
+					lispPush(m, *argnames);
+					lispPush(m, *args);
+					lispRelease(m, argnames);
+					lispRelease(m, args);
+					lispGoto(m, LISP_STATE_BETA2);
+					goto again;
+				}
+			}
+	case LISP_STATE_BETA2:{
+				// scheme-style variadic: if argnames list terminates in a
 				// symbol instead of LISP_NIL, associate the rest of argslist
 				// with it. notice: (lambda x (body)) also lands here.
+				LispRef *args = lispRegister(m, lispPop(m)); // args = cdr expr
+				LispRef *argnames = lispRegister(m, lispPop(m));
 				if(*argnames != LISP_NIL && !lispIsPair(m, *argnames)){
 					LispRef *pair = lispRegister(m, lispCons(m, *argnames, *args));
 					m->envr = lispCons(m, *pair, m->envr);
@@ -1622,21 +1655,21 @@ again:
 				lispRelease(m, args);
 
 				// parameters are bound, pull body from lambda to m->expr.
-				beta = lispCar(m, m->expr); // beta = car expr
-				lambda = lispCar(m, lispCdr(m, beta));
+				LispRef beta = lispCar(m, m->expr); // beta = car expr
+				LispRef lambda = lispCar(m, lispCdr(m, beta));
 				m->expr = lispCdr(m, lispCdr(m, lambda));
 				lispPush(m, m->expr);
-				lispGoto(m, LISP_STATE_BETA1);
+				lispGoto(m, LISP_STATE_BETA3);
 				goto again;
 			}
-	case LISP_STATE_BETA1:{
+	case LISP_STATE_BETA3:{
 				LispRef tmp = lispPeek(m);
 				if(tmp != LISP_NIL){
 					m->expr = lispCar(m, tmp);
 					tmp = lispCdr(m, tmp);
 					lispSetCar(m, m->stack, tmp);
 					if(tmp != LISP_NIL){
-						lispCall(m, LISP_STATE_BETA1, LISP_STATE_EVAL);
+						lispCall(m, LISP_STATE_BETA3, LISP_STATE_EVAL);
 						goto again;
 					} else { // tail call
 						lispPop(m);
