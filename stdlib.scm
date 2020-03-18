@@ -1,18 +1,18 @@
 (let(apply fn args) (fn . args))
 (let(list . args) args)
-(let(not x) (if x #f #t))
+(let(not x) (if x #false #true))
 (let(null? x) (equal? x '()))
 (let(and . args)
-	(if(null? args) #t
-		(if(not(car args)) #f
+	(if(null? args) #true
+		(if(not(car args)) #false
 			(apply and (cdr args)))))
 (let(or . args)
-	(if(null? args) #f
-		(if(car args) #t
+	(if(null? args) #false
+		(if(car args) #true
 			(apply or (cdr args)))))
 (let(list? lst)
 	(if(pair? lst)
-		(if(null? lst) #t (list? (cdr lst)))
+		(if(null? lst) #true (list? (cdr lst)))
 		(null? lst)))
 (let(append head tail)
 	(if(null? head) tail
@@ -28,17 +28,17 @@
 	(let(print-pair obj needsp)
 		(let head (car obj))
 		(if(pair? head)
-			(if(equal? (car head) beta)
-				((lambda() (print-sp needsp) (print1 port "(") (print-obj (car (cdr head)) #f) (print1 port ")")))
-				((lambda() (print-sp needsp) (print1 port "(") (print-obj head #f) (print1 port ")"))))
+			(if(equal? (car head) function)
+				((lambda() (print-sp needsp) (print1 port "(") (print-obj (car (cdr head)) #false) (print1 port ")")))
+				((lambda() (print-sp needsp) (print1 port "(") (print-obj head #false) (print1 port ")"))))
 			((lambda() (print-sp needsp) (print1 port head))))
-		(print-obj (cdr obj) #t))
+		(print-obj (cdr obj) #true))
 	(let(print-obj obj needsp)
 		(if(pair? obj)
 			(print-pair obj needsp)
 			(if(null? obj) '()
 				((lambda() (print1 port " . ") (print1 port obj))))))
-	(print-obj args #f)
+	(print-obj args #false)
 	args)
 (let(map fn ls)
 	(if(null? ls) '()
@@ -96,8 +96,8 @@
 	(let next 2)
 	(let primelist '())
 	(let (prime? n lst)
-		(if(null? lst) #t
-			(if(equal? (remainder n (car lst)) 0) #f
+		(if(null? lst) #true
+			(if(equal? (remainder n (car lst)) 0) #false
 				(prime? n (cdr lst)))))
 	(let generator (lambda()
 		(if(prime? next primelist)
@@ -180,7 +180,7 @@
 	(let (yield! fn)
 		(append-thread fn)
 		(run-threads))
-	(call-with-current-continuation yield!))
+	(call/cc yield!))
 
 (let(start-thread fn . args)
 	(append-thread (lambda() (apply fn args) (run-threads))))

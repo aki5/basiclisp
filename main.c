@@ -9,6 +9,13 @@
 #include "basiclisp.h"
 //#include "linenoise/linenoise.h"
 
+typedef LispRef (LispApplier)(void *, void *, LispRef);
+typedef LispRef (LispGetter)(void *, void *, LispRef);
+typedef LispRef (LispSetter)(void *, void *, LispRef, LispRef);
+typedef LispRef (LispBinaryOp)(void *, LispRef, LispRef);
+typedef LispRef (LispTernaryOp)(void *, LispRef, LispRef, LispRef);
+
+
 typedef struct Context Context;
 typedef struct Vector Vector;
 typedef struct Type Type;
@@ -33,12 +40,7 @@ struct Context {
 	LispRef lenSymbol;
 	LispRef capSymbol;
 
-	LispRef bufferSymbol;
-	Type bufferClass;
-	Type bufferType;
-
 	LispRef vectorSymbol;
-	Type vectorClass;
 	Type vectorType;
 };
 
@@ -447,7 +449,7 @@ main(int argc, char *argv[])
 	lispSetPort(&c.m, 0, (int(*)(int,void*))NULL, (int(*)(void*))getc, (int(*)(int,void*))ungetc, (void*)stdin);
 	lispSetPort(&c.m, 1, (int(*)(int,void*))putc, (int(*)(void*))NULL, (int(*)(int,void*))NULL, (void*)stdout);
 
-	c.vectorClass.apply = vectorNew;
+	c.vectorType.apply = vectorNew;
 
 	c.vectorType.get = vectorGet;
 	c.vectorType.set = vectorSet;
@@ -459,9 +461,9 @@ main(int argc, char *argv[])
 	c.vectorType.print = vectorPrint;
 	c.vectorType.cond = vectorCond;
 	c.vectorSymbol = lispSymbol(&c.m, "vector");
-	LispRef vectorClassRef = lispExtAlloc(&c.m);
-	lispExtSet(&c.m, vectorClassRef, NULL, &c.vectorClass);
-	lispDefine(&c.m, c.vectorSymbol, vectorClassRef);
+	LispRef vectorTypeRef = lispExtAlloc(&c.m);
+	lispExtSet(&c.m, vectorTypeRef, NULL, &c.vectorType);
+	lispDefine(&c.m, c.vectorSymbol, vectorTypeRef);
 
 
 	for(size_t i = 1; i < (size_t)argc; i++){

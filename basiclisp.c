@@ -7,18 +7,24 @@
 #include <assert.h>
 #include "basiclisp.h"
 
+// external object system
+
+// cmp(extref, extref) -> {LISP_BUILTIN_LESS, LISP_BUILTIN_EQUAL, LISP_BUILTIN_GREATER}
+// (extref ...) -> extref apply extref to arguments, typically a constructor.
+// (sym extref extref) -> binary operator, sym can be one of +, -, *, / etc.
 
 #define nelem(x) (sizeof(x)/sizeof(x[0]))
 
 static char *bltnames[] = {
+
 [LISP_BUILTIN_IF] = "if",
-[LISP_BUILTIN_BETA] = "beta",
+[LISP_BUILTIN_FUNCTION] = "function",
 [LISP_BUILTIN_CONTINUE] = "continue",
 [LISP_BUILTIN_LET] = "let",
-[LISP_BUILTIN_CAPTURE] = "capture",
+[LISP_BUILTIN_SCOPE] = "scope",
 [LISP_BUILTIN_LAMBDA] = "lambda",
 [LISP_BUILTIN_QUOTE] = "quote",
-[LISP_BUILTIN_CALLCC] = "call-with-current-continuation",
+[LISP_BUILTIN_CALLCC] = "call/cc",
 [LISP_BUILTIN_SET] = "set!",
 [LISP_BUILTIN_SETCAR] = "set-car!",
 [LISP_BUILTIN_SETCDR] = "set-cdr!",
@@ -27,24 +33,51 @@ static char *bltnames[] = {
 [LISP_BUILTIN_CDR] = "cdr",
 [LISP_BUILTIN_EVAL] = "eval",
 
+// this is implemented on symbols and string constants, and produces a
+// lexicographic ordering of unicode codepoints. external objects can implement
+// it too. it returns #below, #equal or #above.
+[LISP_BUILTIN_COMPARE] = "compare",
+
+// these will get eliminated. arithmetic can be implemented between external
+// objects using symbol references to whatever operators the application sees
+// fit. all numbers will be constructed as external objects using notation like
+//	(int 10) or (float 10.1).
+// the parser will be modified to interpret number constants as symbols.
 [LISP_BUILTIN_ADD] = "+",
 [LISP_BUILTIN_SUB] = "-",
 [LISP_BUILTIN_MUL] = "*",
 [LISP_BUILTIN_DIV] = "/",
-[LISP_BUILTIN_BITIOR] = "bitwise-ior",
-[LISP_BUILTIN_BITAND] = "bitwise-and",
-[LISP_BUILTIN_BITXOR] = "bitwise-xor",
-[LISP_BUILTIN_BITNOT] = "bitwise-not",
-[LISP_BUILTIN_REM] = "remainder",
 
 [LISP_BUILTIN_ISPAIR] = "pair?",
 [LISP_BUILTIN_ISEQUAL] = "equal?",
+
+// less? becomes
+//	(let (less? a b)
+//		(equal? (compare a b) #less))
 [LISP_BUILTIN_ISLESS] = "less?",
+
+// error? becomes
+//	(if (pair? err)
+//		(equal? (car err) #error)
+//		#f)
 [LISP_BUILTIN_ISERROR] = "error?",
-[LISP_BUILTIN_TRUE] = "#t",
-[LISP_BUILTIN_FALSE] = "#f",
+
+// should be (fmt obj) -> '(1 0)
 [LISP_BUILTIN_PRINT1] = "print1",
-[LISP_BUILTIN_ERROR] = "error",
+
+// error should return a list (#error message context) instead.. obviously this
+// won't work for OOM errors, so we should just preallocate that one.
+[LISP_BUILTIN_ERROR] = "#error",
+
+// more readable than the standard #t, #f
+[LISP_BUILTIN_TRUE] = "#true",
+[LISP_BUILTIN_FALSE] = "#false",
+
+// compare must return one of these
+[LISP_BUILTIN_ABOVE] = "#above",
+[LISP_BUILTIN_BELOW] = "#below",
+[LISP_BUILTIN_EQUAL] = "#equal",
+
 };
 
 LispRef *
@@ -125,6 +158,7 @@ lispCellPointer(LispMachine *m, LispRef ref)
 		fprintf(stderr, "dereferencing an out of bounds reference: %x\n", ref);
 		abort();
 	}
+	assert((off&1) == 0);
 	return m->mem.ref + off;
 }
 
@@ -231,8 +265,9 @@ lispIsExtRef(LispMachine *mach, LispRef a)
 	return reftag(a) == LISP_TAG_EXTREF;
 }
 
+// pair, can be nil.
 int
-lispIsPairOrNull(LispMachine *m, LispRef a)
+lispIsList(LispMachine *m, LispRef a)
 {
 	return reftag(a) == LISP_TAG_PAIR;
 }
@@ -243,6 +278,7 @@ lispIsNull(LispMachine *m, LispRef a)
 	return reftag(a) == LISP_TAG_PAIR && a == LISP_NIL;
 }
 
+// a non-nil pair (car and cdr will work)
 int
 lispIsPair(LispMachine *m, LispRef a)
 {
@@ -942,8 +978,8 @@ lispApplySet(LispMachine *m)
 			LispRef envr;
 			if(lispIsPair(m, *symp)){
 
-				LispRef beta = lispCar(m, lispCdr(m, *symp));
-				if(lispIsExtRef(m, beta)){
+				LispRef function = lispCar(m, lispCdr(m, *symp));
+				if(lispIsExtRef(m, function)){
 					// it's (10 buf) form, ie. buffer indexing
 					// assemble a form (set! (10 buf) value) and call/ext
 					m->expr = lispCons(m, m->value, LISP_NIL);
@@ -953,11 +989,11 @@ lispApplySet(LispMachine *m)
 					lispGoto(m, LISP_STATE_CONTINUE);
 					return 1;
 				}
-				LispRef betaHead = lispCar(m, beta);
-				if(lispIsBuiltin(m, betaHead, LISP_BUILTIN_BETA)){
-					// it's (set! ('sym beta) ...) form, ie. member access.
-					// -> search sym in envr captured in beta
-					envr = lispCdr(m, lispCdr(m, beta));
+				LispRef functionHead = lispCar(m, function);
+				if(lispIsBuiltin(m, functionHead, LISP_BUILTIN_FUNCTION)){
+					// it's (set! ('sym function) ...) form, ie. member access.
+					// -> search sym in envr scoped in function
+					envr = lispCdr(m, lispCdr(m, function));
 					*symp = lispCar(m, *symp);
 				} else {
 					// else it's unsupported form
@@ -998,7 +1034,7 @@ static int
 lispApplyBuiltin(LispMachine *m)
 {
 	LispRef blt = lispGetBuiltin(m, lispCar(m, m->expr));
-	if(blt >= LISP_BUILTIN_ADD && blt <= LISP_BUILTIN_REM){
+	if(blt - LISP_BUILTIN_ADD <= LISP_BUILTIN_DIV - LISP_BUILTIN_ADD){
 		LispRef ref0, ref;
 		int ires;
 		int nterms;
@@ -1035,21 +1071,6 @@ lispApplyBuiltin(LispMachine *m)
 				case LISP_BUILTIN_DIV:
 					ires /= tmp;
 					break;
-				case LISP_BUILTIN_BITIOR:
-					ires |= tmp;
-					break;
-				case LISP_BUILTIN_BITAND:
-					ires &= tmp;
-					break;
-				case LISP_BUILTIN_BITXOR:
-					ires ^= tmp;
-					break;
-				case LISP_BUILTIN_BITNOT:
-					ires = ~tmp;
-					break;
-				case LISP_BUILTIN_REM:
-					ires %= tmp;
-					break;
 				}
 			} else {
 				m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
@@ -1077,31 +1098,28 @@ lispApplyBuiltin(LispMachine *m)
 		LispRef args = lispCdr(m, m->expr);
 		LispRef arg0 = lispCar(m, args);
 		args = lispCdr(m, args);
-		while(args != LISP_NIL){
-			LispRef arg = lispCar(m, args);
-			if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg)){
-				lispGoto(m, LISP_STATE_CONTINUE);
-				return 1;
-			} else if(reftag(arg0) != reftag(arg)){
+		LispRef arg = lispCar(m, args);
+		if(lispIsExtRef(m, arg0) || lispIsExtRef(m, arg)){
+			lispGoto(m, LISP_STATE_CONTINUE);
+			return 1;
+		} else if(reftag(arg0) != reftag(arg)){
+			m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
+			goto eqdone;
+		} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg)){
+			if(lispGetInt(m, arg0) != lispGetInt(m, arg)){
 				m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
 				goto eqdone;
-			} else if(lispIsNumber(m, arg0) && lispIsNumber(m, arg)){
-				if(lispGetInt(m, arg0) != lispGetInt(m, arg)){
-					m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
-					goto eqdone;
-				}
-			} else if(lispIsPairOrNull(m, arg0) && lispIsPairOrNull(m, arg)){
-				if(arg0 != arg){
-					m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
-					goto eqdone;
-				}
-			} else {
-				fprintf(stderr, "equal?: unsupported types %d %d\n", reftag(arg0), reftag(arg));
-				m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
-				lispReturn(m);
-				return 0;
 			}
-			args = lispCdr(m, args);
+		} else if(lispIsList(m, arg0) && lispIsList(m, arg)){
+			if(arg0 != arg){
+				m->value = lispBuiltin(m, LISP_BUILTIN_FALSE);
+				goto eqdone;
+			}
+		} else {
+			fprintf(stderr, "equal?: unsupported types %d %d\n", reftag(arg0), reftag(arg));
+			m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
+			lispReturn(m);
+			return 0;
 		}
 		m->value = lispBuiltin(m, LISP_BUILTIN_TRUE);
 	eqdone:
@@ -1210,8 +1228,7 @@ lispApplySymLookup(LispMachine *m)
 		abort();
 	case LISP_STATE_SYM_LOOKUP0:
 		if(m->expr == LISP_NIL){
-			// not found
-			m->value = LISP_NIL;
+			m->value = lispBuiltin(m, LISP_BUILTIN_ERROR); // not found
 			lispReturn(m);
 			return 0;
 		} else {
@@ -1357,11 +1374,17 @@ again:
 		if(lispApplySymLookup(m) == 1)
 			return 1;
 		goto again;
-	case LISP_STATE_SYM_LOOKUP1:
-		lispPop(m);
-		m->value = lispCdr(m, m->value);
-		lispReturn(m);
-		goto again;
+	case LISP_STATE_SYM_LOOKUP1:{
+			LispRef sym = lispPop(m);
+			if(m->value == LISP_BUILTIN_ERROR){
+				fprintf(stderr, "symbol %s not found\n", lispStringPointer(m, sym));
+			} else {
+				// extract value part of (sym . value)
+				m->value = lispCdr(m, m->value);
+			}
+			lispReturn(m);
+			goto again;
+		}
 	case LISP_STATE_SET0:
 	case LISP_STATE_SET1:
 	case LISP_STATE_SET2:
@@ -1401,7 +1424,7 @@ again:
 		} else if(lispIsPair(m, m->expr)){
 			// form is (something), so this is 'application'
 			// evaluate list head first, it is typically a lambda or a symbol.
-			// then see if it's a special form (quote, lambda, beta, if, define) 
+			// then see if it's a special form (quote, lambda, function, if, define) 
 			LispRef head;
 			lispPush(m, m->expr);
 			m->expr = lispCar(m, m->expr);
@@ -1419,25 +1442,36 @@ again:
 			if(lispIsBuiltinTag(m, head)){
 				LispRef blt = lispGetBuiltin(m, head);
 				if(blt == LISP_BUILTIN_IF){
+					// (if cond then else)
 					lispGoto(m, LISP_STATE_IF0);
 					goto again;
 				}
-				if(blt == LISP_BUILTIN_BETA || blt == LISP_BUILTIN_CONTINUE){
-					// beta literal: return self.
+				if(blt == LISP_BUILTIN_FUNCTION){
+					// (function (lambda args body) envr): return self.
+					m->value = m->expr;
+					lispReturn(m);
+					goto again;
+				}
+				if(blt == LISP_BUILTIN_CONTINUE){
+					// continuation: return self.
 					m->value = m->expr;
 					lispReturn(m);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_LET){
+					// (let sym value)
+					// (let (sym args) body)
 					lispGoto(m, LISP_STATE_LET0);
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_SET){
+					// (set! sym value)
+					// (set! ('field obj) value)
 					lispGoto(m, LISP_STATE_SET0);
 					goto again;
 				}
-				if(blt == LISP_BUILTIN_CAPTURE){
-					// (capture vars body)
+				if(blt == LISP_BUILTIN_SCOPE){
+					// (scope vars body)
 					// construct a new environment with only vars in it, then
 					// continue to eval body.
 					LispRef *newenvr = lispRegister(m, LISP_NIL);
@@ -1469,9 +1503,9 @@ again:
 					goto again;
 				}
 				if(blt == LISP_BUILTIN_LAMBDA){
-					// (lambda args body) -> (beta (lambda args body) envr)
+					// (lambda args body) -> (function (lambda args body) envr)
 					LispRef *tmp = lispRegister(m, lispCons(m, m->expr, m->envr));
-					m->value = lispCons(m, lispBuiltin(m, LISP_BUILTIN_BETA), *tmp);
+					m->value = lispCons(m, lispBuiltin(m, LISP_BUILTIN_FUNCTION), *tmp);
 					lispRelease(m, tmp);
 					lispReturn(m);
 					goto again;
@@ -1510,21 +1544,21 @@ again:
 				// special form set! for this notation, so that
 				//		(set! ('x r0) 7)
 				// does what you might expect.
-				LispRef beta = lispCar(m, lispCdr(m, m->expr));
-				if(beta == LISP_NIL){
+				LispRef function = lispCar(m, lispCdr(m, m->expr));
+				if(function == LISP_NIL){
 					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 					lispReturn(m);
 					goto again;
 				}
-				if(lispIsExtRef(m, beta)){
-					m->expr = lispCons(m, beta, LISP_NIL);
+				if(lispIsExtRef(m, function)){
+					m->expr = lispCons(m, function, LISP_NIL);
 					m->expr = lispCons(m, head, m->expr);
 					lispGoto(m, LISP_STATE_CONTINUE);
 					return 1;
 				}
-				LispRef betahead = lispCar(m, beta);
-				if(lispIsBuiltin(m, betahead, LISP_BUILTIN_BETA)){
-					m->expr = lispCdr(m, lispCdr(m, beta));
+				LispRef functionhead = lispCar(m, function);
+				if(lispIsBuiltin(m, functionhead, LISP_BUILTIN_FUNCTION)){
+					m->expr = lispCdr(m, lispCdr(m, function));
 					lispPush(m, head);
 					lispCall(m, LISP_STATE_SYM_LOOKUP1, LISP_STATE_SYM_LOOKUP0);
 					goto again;
@@ -1537,18 +1571,18 @@ again:
 
 			} else if(lispIsPair(m, head)){
 
-				// form is ((beta (lambda...)) args), or a continuation.
-				// ((beta (lambda args . body) . envr) args) -> (body),
+				// form is ((function (lambda args body)) args), or a continuation.
+				// ((function (lambda args . body) . envr) args) -> (body),
 				// with a new environment
 
-				LispRef beta, lambda;
-				beta = lispCar(m, m->expr);
-				if(beta == LISP_NIL){
+				LispRef function, lambda;
+				function = lispCar(m, m->expr);
+				if(function == LISP_NIL){
 					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 					lispReturn(m);
 					goto again;
 				}
-				head = lispCar(m, beta);
+				head = lispCar(m, function);
 				if(!lispIsBuiltinTag(m, head)){
 					m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 					lispReturn(m);
@@ -1556,18 +1590,18 @@ again:
 				}
 				if(lispIsBuiltin(m, head, LISP_BUILTIN_CONTINUE)){
 					// ((continue . stack) return-value)
-					m->stack = lispCdr(m, beta);
+					m->stack = lispCdr(m, function);
 					m->value = lispCdr(m, m->expr);
 					if(lispIsPair(m, m->value))
 						m->value = lispCar(m, m->value);
 					lispReturn(m);
-					goto again;
-				} else if(lispIsBuiltin(m, head, LISP_BUILTIN_BETA)){
+					goto again; 
+				} else if(lispIsBuiltin(m, head, LISP_BUILTIN_FUNCTION)){
 					lispGoto(m, LISP_STATE_BETA0);
 					goto again;
 				} else {
-					if(refval(head) != LISP_BUILTIN_BETA){
-						fprintf(stderr, "applying list with non-beta head\n");
+					if(refval(head) != LISP_BUILTIN_FUNCTION){
+						fprintf(stderr, "applying list with non-function head\n");
 						m->value = lispBuiltin(m, LISP_BUILTIN_ERROR);
 						lispReturn(m);
 						goto again;
@@ -1580,9 +1614,9 @@ again:
 			}
 
 	case LISP_STATE_BETA0:{
-				LispRef beta = lispCar(m, m->expr);
-				LispRef lambda = lispCar(m, lispCdr(m, beta));
-				m->envr = lispCdr(m, lispCdr(m, beta));
+				LispRef function = lispCar(m, m->expr);
+				LispRef lambda = lispCar(m, lispCdr(m, function));
+				m->envr = lispCdr(m, lispCdr(m, function));
 
 				LispRef *argnames = lispRegister(m, lispCdr(m, lambda));
 				LispRef *args = lispRegister(m, lispCdr(m, m->expr)); // args = cdr expr
@@ -1655,8 +1689,8 @@ again:
 				lispRelease(m, args);
 
 				// parameters are bound, pull body from lambda to m->expr.
-				LispRef beta = lispCar(m, m->expr); // beta = car expr
-				LispRef lambda = lispCar(m, lispCdr(m, beta));
+				LispRef function = lispCar(m, m->expr); // function = car expr
+				LispRef lambda = lispCar(m, lispCdr(m, function));
 				m->expr = lispCdr(m, lispCdr(m, lambda));
 				lispPush(m, m->expr);
 				lispGoto(m, LISP_STATE_BETA3);
@@ -1707,7 +1741,7 @@ again:
 static LispRef
 lispCopy(LispMachine *newm, LispMachine *oldm, LispRef ref)
 {
-	if(lispIsPairOrNull(oldm, ref)){
+	if(lispIsList(oldm, ref)){
 		if(ref == LISP_NIL)
 			return LISP_NIL;
 		if(lispIsBuiltin(oldm, lispCar(oldm, ref), LISP_BUILTIN_FORWARD))

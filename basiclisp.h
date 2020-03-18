@@ -2,11 +2,6 @@
 typedef unsigned int LispRef;
 typedef unsigned int LispPort;
 typedef struct LispMachine LispMachine;
-typedef LispRef (LispApplier)(void *, void *, LispRef);
-typedef LispRef (LispGetter)(void *, void *, LispRef);
-typedef LispRef (LispSetter)(void *, void *, LispRef, LispRef);
-typedef LispRef (LispBinaryOp)(void *, LispRef, LispRef);
-typedef LispRef (LispTernaryOp)(void *, LispRef, LispRef, LispRef);
 
 // these are macros because enums are signed and these fiddle with the MSB.
 #define LISP_TAG_BIT ((LispRef)1<<(8*sizeof(LispRef)-1))
@@ -27,40 +22,43 @@ enum {
 	LISP_TAG_SYMBOL,	// 0001...  4k (256M) symbols (offset to the name table)
 	LISP_TAG_BUILTIN,	// 00001..  2k (128M) built-in functions (enumerated below)
 
-	LISP_BUILTIN_IF = 0,
-	LISP_BUILTIN_BETA,
+	LISP_BUILTIN_CALLCC = 0,
+	LISP_BUILTIN_CAR,
+	LISP_BUILTIN_CDR,
+	LISP_BUILTIN_COMPARE,
+	LISP_BUILTIN_CONS,
 	LISP_BUILTIN_CONTINUE,
-	LISP_BUILTIN_LET,
-	LISP_BUILTIN_CAPTURE,
+	LISP_BUILTIN_EVAL,
+	LISP_BUILTIN_FUNCTION,
+	LISP_BUILTIN_IF,
 	LISP_BUILTIN_LAMBDA,
+	LISP_BUILTIN_LET,
 	LISP_BUILTIN_QUOTE,
-	LISP_BUILTIN_CALLCC,
+	LISP_BUILTIN_SCOPE,
 	LISP_BUILTIN_SET,
 	LISP_BUILTIN_SETCAR,
 	LISP_BUILTIN_SETCDR,
-	LISP_BUILTIN_CONS,
-	LISP_BUILTIN_CAR,
-	LISP_BUILTIN_CDR,
-	LISP_BUILTIN_EVAL,
 
 	// arithmetic
 	LISP_BUILTIN_ADD,
 	LISP_BUILTIN_SUB,
 	LISP_BUILTIN_MUL,
 	LISP_BUILTIN_DIV,
-	LISP_BUILTIN_BITIOR,
-	LISP_BUILTIN_BITAND,
-	LISP_BUILTIN_BITXOR,
-	LISP_BUILTIN_BITNOT,
-	LISP_BUILTIN_REM,
 
 	// predicates
 	LISP_BUILTIN_ISPAIR,
 	LISP_BUILTIN_ISEQUAL,
 	LISP_BUILTIN_ISLESS,
 	LISP_BUILTIN_ISERROR,
-	LISP_BUILTIN_TRUE,
-	LISP_BUILTIN_FALSE,
+
+	// (equal? a b) ->
+	LISP_BUILTIN_TRUE,	// #t
+	LISP_BUILTIN_FALSE, // #f
+
+	// (compare a b) ->
+	LISP_BUILTIN_ABOVE, // #above
+	LISP_BUILTIN_EQUAL, // #equal
+	LISP_BUILTIN_BELOW, // #below
 
 	// io
 	LISP_BUILTIN_PRINT1,
