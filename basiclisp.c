@@ -13,6 +13,25 @@
 // (extref ...) -> extref apply extref to arguments, typically a constructor.
 // (sym extref extref) -> binary operator, sym can be one of +, -, *, / etc.
 
+// byte values are "inlined" to the symbol and are parsed as #0 #1 ... #255
+// long symbols are offsets to a name table
+// quoted symbol evaluates to symbol
+// symbol evaluates to variable in current environment
+// a reference always points to a pair
+// a pair has two things, car and cdr.
+
+// when a symbol is applied to a function (product of lambda), a variable
+// corresponding to that symbol is returned from the function's closure.
+
+// (let (vector3 x y z) (closure(x y z)))
+// (let origin (vector3 '0 '0 '0))
+// (print! 'x ('x origin) 'y ('y origin) 'z ('z origin))
+
+// any function producing a sequence of symbols when called repeatedly is an input.
+// - end of stream is indicated by returning #nil
+// - error is indicated by returning (#error ...)
+
+
 #define nelem(x) (sizeof(x)/sizeof(x[0]))
 
 static char *bltnames[] = {
@@ -68,6 +87,9 @@ static char *bltnames[] = {
 // error should return a list (#error message context) instead.. obviously this
 // won't work for OOM errors, so we should just preallocate that one.
 [LISP_BUILTIN_ERROR] = "#error",
+
+// this shall be the list terminator etc. also the empty list.
+[LISP_BUILTIN_NIL] = "#nil",
 
 // more readable than the standard #t, #f
 [LISP_BUILTIN_TRUE] = "#true",
@@ -166,11 +188,11 @@ static char *
 lispStringPointer(LispMachine *m, LispRef ref)
 {
 	size_t off = urefval(ref);
-	if(off <= 0 || off >= m->strings.len){
-		fprintf(stderr, "dereferencing an out of bounds string reference: %x off: %zu\n", ref, off);
+	if(off < LISP_INLINE_SYMBOL || off >= LISP_INLINE_SYMBOL+m->strings.len){
+		fprintf(stderr, "dereferencing an out of bounds string reference: %x off: %zu %c\n", ref, off, off);
 		abort();
 	}
-	return m->strings.p + off;
+	return m->strings.p + off - LISP_INLINE_SYMBOL;
 }
 
 static LispRef
@@ -485,6 +507,46 @@ nextPow2(size_t v)
 	return v + 1;
 }
 
+int
+utf8Decode(unsigned char *ch, unsigned len, unsigned *code)
+{
+	if(len < 1)
+		return -1;
+	unsigned ch0 = ch[0];
+	if(ch0 < 0x80){/* 0xxx xxxx */
+		*code = ch0;
+		return 1;
+	}
+	if(ch0 < 0xc0){/* 10xx xxxx */
+		// sequence seems to be starting in the middle of a sequence.
+		// return error code and advance by one.
+		return -1;
+	}
+	if(len < 2)
+		return -1;
+	unsigned ch1 = ch[1];
+	if(ch0 < 0xe0){/* 110x xxxx */
+		*code = ((ch0 & 0x1f) << 6) | (ch1 & 0x3f);
+		return 2;
+	}
+	if(len < 3)
+		return -1;
+	unsigned ch2 = ch[2];
+	if(ch0 < 0xf0){/* 1110 xxxx */
+		*code = ((ch0 & 0x0f) << 12) | ((ch1 & 0x3f) << 6) | (ch2 & 0x3f);
+		return 3;
+	}
+	if(len < 4)
+		return -1;
+	unsigned ch3 = ch[3];
+	if(ch0 < 0xf8){/* 1111 0xxx */
+		*code = ((ch0 & 0x07) << 18) | ((ch1 & 0x3f) << 12) | ((ch2 & 0x3f) << 6) | (ch3 & 0x3f);
+		return 4;
+	}
+	assert(!"utf8Decode: > 21 bit codes are not standard");
+	return -1;
+}
+
 static LispRef
 lispAllocSymbol(LispMachine *m, char *str)
 {
@@ -502,7 +564,7 @@ lispAllocSymbol(LispMachine *m, char *str)
 		m->strings.p = p;
 		memset(m->strings.p + m->strings.len, 0, m->strings.cap - m->strings.len);
 	}
-	LispRef ref = mkref(m->strings.len, LISP_TAG_SYMBOL);
+	LispRef ref = mkref(LISP_INLINE_SYMBOL + m->strings.len, LISP_TAG_SYMBOL);
 	memcpy(m->strings.p + m->strings.len, str, slen);
 	m->strings.len += slen;
 	return ref;
@@ -657,9 +719,18 @@ lispCons(LispMachine *m, LispRef a, LispRef d)
 LispRef
 lispSymbol(LispMachine *m, char *str)
 {
+	// skip the string table for one codepoint strings
+	int strLen = strlen(str);
+	unsigned code;
+	int len = utf8Decode(str, strLen+1, &code);
+	if(len == strLen && code < LISP_INLINE_SYMBOL)
+		return mkref(code, LISP_TAG_SYMBOL);
+
+	// it's not a single codepoint, so look it up in the name table
 	LispRef ref;
 	uint32_t hash = fnv32a(str, 0);
 	if((ref = indexLookup(m, hash, str)) == LISP_NIL){
+		// since it's a new name, put it in the name table.
 		ref = lispAllocSymbol(m, str);
 		indexInsert(m, hash, ref);
 	}
@@ -785,9 +856,14 @@ lispPrint1(LispMachine *m, LispRef aref, LispPort port)
 	case LISP_TAG_INTEGER:
 		snprintf(buf, sizeof buf, "%zd", refval(aref));
 		break;
-	case LISP_TAG_SYMBOL:
-		snprintf(buf, sizeof buf, "%s", lispStringPointer(m, aref));
-		break;
+	case LISP_TAG_SYMBOL:{
+			unsigned sym = urefval(aref);
+			if(sym < LISP_INLINE_SYMBOL)
+				snprintf(buf, sizeof buf, "%lc", sym);
+			else
+				snprintf(buf, sizeof buf, "%s", lispStringPointer(m, aref));
+			break;
+		}
 	}
 	lispWrite(m, port, (unsigned char *)buf, strlen(buf));
 	return tag;
@@ -1327,7 +1403,8 @@ lispEvalArgs(LispMachine *m)
 			lispRelease(m, state);
 			lispRelease(m, exprCell);
 			lispRelease(m, valueCell);
-			// call "apply" on the current expr and have it return to this case.
+			// call "apply" on the current expr and have it return to ARGS1
+			// state.
 			lispCall(m, LISP_STATE_EVAL_ARGS1, LISP_STATE_EVAL);
 			return 0;
 		}
@@ -1376,7 +1453,7 @@ again:
 		goto again;
 	case LISP_STATE_SYM_LOOKUP1:{
 			LispRef sym = lispPop(m);
-			if(m->value == LISP_BUILTIN_ERROR){
+			if(m->value == lispBuiltin(m, LISP_BUILTIN_ERROR)){
 				fprintf(stderr, "symbol %s not found\n", lispStringPointer(m, sym));
 			} else {
 				// extract value part of (sym . value)
@@ -1410,7 +1487,8 @@ again:
 		return 0;
 	case LISP_STATE_EVAL:
 		if(lispIsAtom(m, m->expr)){
-			// atom evaluates to itself
+			// atom evaluates to itself, these are currently
+			// numbers, #true, #false, #greater, #equal, #less
 			m->value = m->expr;
 			lispReturn(m);
 			goto again;
@@ -1556,8 +1634,10 @@ again:
 					lispGoto(m, LISP_STATE_CONTINUE);
 					return 1;
 				}
-				LispRef functionhead = lispCar(m, function);
-				if(lispIsBuiltin(m, functionhead, LISP_BUILTIN_FUNCTION)){
+				// if it is a function (created by lambda), search the symbol
+				// in its captured environment
+				LispRef functionHead = lispCar(m, function);
+				if(lispIsBuiltin(m, functionHead, LISP_BUILTIN_FUNCTION)){
 					m->expr = lispCdr(m, lispCdr(m, function));
 					lispPush(m, head);
 					lispCall(m, LISP_STATE_SYM_LOOKUP1, LISP_STATE_SYM_LOOKUP0);

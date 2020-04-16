@@ -16,11 +16,15 @@ enum {
 	LISP_TOK_SYMBOL,
 	LISP_TOK_STRING,
 
-	LISP_TAG_PAIR = 0,	// 1...... 32k (2B) cells (pairs)
-	LISP_TAG_INTEGER,	// 01..... 16k (1B) unsigned ints
-	LISP_TAG_EXTREF,	// 001....  8k (512M) external objects
-	LISP_TAG_SYMBOL,	// 0001...  4k (256M) symbols (offset to the name table)
-	LISP_TAG_BUILTIN,	// 00001..  2k (128M) built-in functions (enumerated below)
+	LISP_INLINE_SYMBOL = 0x110000,  // all single unicode codepoints
+	//LISP_INLINE_SYMBOL = 0x80, // all ascii characters
+	//LISP_INLINE_SYMBOL = 0, // nothing
+
+	LISP_TAG_PAIR = 0,	// 1... .... 32k (2B) cells (pairs)
+	LISP_TAG_INTEGER,	// 01.. .... 16k (1B) unsigned ints
+	LISP_TAG_EXTREF,	// 001. ....  8k (512M) external objects
+	LISP_TAG_SYMBOL,	// 0001 ....  4k (256M) symbols (unicode codepoint or offset to name table)
+	LISP_TAG_BUILTIN,	// 0000 1...  2k (128M) built-in functions (enumerated below)
 
 	LISP_BUILTIN_CALLCC = 0,
 	LISP_BUILTIN_CAR,
@@ -52,8 +56,9 @@ enum {
 	LISP_BUILTIN_ISERROR,
 
 	// (equal? a b) ->
-	LISP_BUILTIN_TRUE,	// #t
-	LISP_BUILTIN_FALSE, // #f
+	LISP_BUILTIN_TRUE,	// #true
+	LISP_BUILTIN_FALSE, // #false
+	LISP_BUILTIN_NIL, // #nil
 
 	// (compare a b) ->
 	LISP_BUILTIN_ABOVE, // #above
